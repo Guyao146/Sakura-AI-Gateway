@@ -16,6 +16,7 @@
   "build": {
     "appId": "cn.mcylyr.sakuraaigateway.electron",
     "productName": "Sakura-AI-Gateway Electron",
+    "publish": [],
     "asar": true,
     "files": ["main.js", "preload.js", "data-directory.js", "package.json"],
     "extraResources": [{ "from": "gateway", "to": "gateway" }],
