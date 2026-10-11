@@ -161,6 +161,38 @@ module.exports = async function oauthBrowser(base, { username, password, sourceK
     await waitFor(`document.querySelector('[data-oauth-action="toggle"][data-id="${client.id}"]').textContent === '启用'`);
     await click(`[data-oauth-action="delete"][data-id="${client.id}"]`);
     await waitFor(`!document.querySelector('[data-oauth-action="edit"][data-id="${client.id}"]')`);
+    // 首次连接自动登记：不预登记 Client，浏览器只带网关地址、应用名与回调。
+    const autoRedirect = `${redirectUri}&flow=auto`;
+    const autoVerifier = crypto.randomBytes(32).toString('base64url');
+    const autoParams = new URLSearchParams({ client_id: 'auto', name: 'Browser auto app', response_type: 'code', redirect_uri: autoRedirect,
+      scope: 'models:read models:invoke offline_access', state: crypto.randomBytes(24).toString('base64url'),
+      code_challenge: crypto.createHash('sha256').update(autoVerifier).digest('base64url'), code_challenge_method: 'S256' });
+    await navigate(`${base}/oauth/authorize?${autoParams}`);
+    await waitFor('Boolean(document.querySelector("#authorizeForm:not(.hidden)"))');
+    assert.equal(await evaluate('document.querySelector("#authorizeClient").textContent'), 'Browser auto app');
+    assert.equal(await evaluate('document.querySelector("#authorizeAutoNotice").classList.contains("hidden")'), false, '首次连接必须显示自动登记提示');
+    const multiKey = await evaluate('document.querySelectorAll("#authorizeSourceKey option").length > 1');
+    if (multiKey) {
+      assert.equal(await evaluate('document.querySelector("#authorizeSourceKeyRow").classList.contains("hidden")'), false, '首次连接必须能选择来源 Key');
+      const before = await evaluate('document.querySelector("#authorizeSource").textContent');
+      await evaluate('const select = document.querySelector("#authorizeSourceKey"); select.value = select.options[1].value; select.onchange();');
+      await waitFor(`document.querySelector("#authorizeSource").textContent !== ${JSON.stringify(before)}`);
+    }
+    await evaluate('document.querySelector("#authorizeForm").requestSubmit()');
+    await waitFor('location.hostname === "localhost" && location.pathname === "/callback" && location.search.includes("code=")');
+    const autoRedirected = new URL(callbacks.at(-1).url, redirectUri);
+    assert.equal(autoRedirected.searchParams.get('state'), autoParams.get('state'));
+    assert.equal(autoRedirected.searchParams.get('iss'), base);
+    const autoExchange = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({
+      grant_type: 'authorization_code', client_id: 'auto', redirect_uri: autoRedirect, code: autoRedirected.searchParams.get('code'), code_verifier: autoVerifier
+    }) });
+    assert.equal(autoExchange.status, 200);
+    const autoTokens = await autoExchange.json();
+    const autoClient = (await (await fetch(`${base}/api/admin/oauth-clients`)).json()).clients.find((item) => item.redirectUris.includes(autoRedirect));
+    assert.ok(autoClient, '浏览器确认后应自动登记应用');
+    assert.equal(autoClient.name, 'Browser auto app');
+    assert.equal(autoTokens.client_id, autoClient.id, '换码响应必须带回 Client ID');
+    assert.equal(await fetch(`${base}/v1/models`, { headers: { Authorization: `Bearer ${autoTokens.access_token}` } }).then((response) => response.status), 200);
     assert.deepEqual(exceptions, [], '浏览器不能出现未处理脚本异常');
     console.log('OAuth browser tests passed (application registration, login, consent/denial, callback, revocation, responsive layout)');
   } finally {

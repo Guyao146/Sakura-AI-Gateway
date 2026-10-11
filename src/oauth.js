@@ -4,6 +4,7 @@ const { normalizeKeyAccess, keyAccessModels, isKeyModelAllowed } = require('../p
 
 const ACCESS_TOKEN_PREFIX = 'sakura-at_';
 const REFRESH_TOKEN_PREFIX = 'sakura-rt_';
+const AUTO_CLIENT_ID = 'auto';
 const SCOPES = Object.freeze({
   'models:read': '读取获准使用的模型列表与接入配置',
   'models:invoke': '调用获准使用的模型（会消耗上游额度）',
@@ -58,6 +59,7 @@ function normalizeOAuthClient(item) {
   const sourceKeyId = typeof item.sourceKeyId === 'string' ? item.sourceKeyId.trim() : '';
   if (!sourceKeyId || sourceKeyId.length > 120) throw oauthError('invalid_request', '请选择来源 Key 作为应用权限上限');
   if (item.enabled !== undefined && typeof item.enabled !== 'boolean') throw oauthError('invalid_request', 'enabled 必须是布尔值');
+  if (String(item.id || '') === AUTO_CLIENT_ID) throw oauthError('invalid_request', '应用 ID 不能使用保留字 auto');
   const id = String(item.id || random('oauth_client_'));
   if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) throw oauthError('invalid_request', '应用 ID 无效');
   return {
@@ -145,7 +147,34 @@ class OAuthProvider {
     return key;
   }
 
+  validateAutoAuthorization(parameters, issuer) {
+    // 首次连接：接入方尚未登记 Client，由当前登录账号在确认授权时选择来源 Key 并自动登记。
+    const name = typeof parameters.name === 'string' ? parameters.name.trim() : '';
+    if (!name || name.length > 100) throw oauthError('invalid_request', '自动登记需要 1 到 100 字符的应用名称');
+    const redirectUri = validateRedirectUri(parameters.redirect_uri);
+    // Cookie 按主机而非端口隔离；同主机名回调会把管理会话一并发给接入应用。
+    const hostname = (value) => new URL(value).hostname.toLowerCase().replace(/\.$/, '');
+    if (issuer && hostname(redirectUri) === hostname(issuer)) {
+      throw oauthError('invalid_request', '应用回调不能与网关使用同一主机名（即使端口不同），请使用独立域名；本机可分别使用 localhost 与 127.0.0.1');
+    }
+    if (parameters.response_type !== 'code') throw oauthError('unsupported_response_type', '只支持授权码模式 response_type=code');
+    if (parameters.code_challenge_method !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(parameters.code_challenge || '')) {
+      throw oauthError('invalid_request', '必须提供 S256 PKCE code_challenge');
+    }
+    if (typeof parameters.state !== 'string' || !parameters.state || parameters.state.length > 512 || /[\u0000-\u001f\u007f]/.test(parameters.state)) {
+      throw oauthError('invalid_request', '必须提供不超过 512 字符的随机 state');
+    }
+    const keys = this.getConfig().localApiKeys.filter((item) => item.enabled !== false);
+    if (!keys.length) throw oauthError('access_denied', '网关还没有启用的本地调用 Key，无法自动登记应用', 403);
+    const key = typeof parameters.key_id === 'string' && parameters.key_id
+      ? keys.find((item) => item.id === parameters.key_id)
+      : keys[0];
+    if (!key) throw oauthError('invalid_request', '指定的来源 Key 不存在或已停用');
+    return { auto: true, name, key, redirectUri, state: parameters.state, challenge: parameters.code_challenge, scopes: scopesFrom(parameters.scope) };
+  }
+
   validateAuthorization(parameters, issuer) {
+    if (parameters.client_id === AUTO_CLIENT_ID) return this.validateAutoAuthorization(parameters, issuer);
     const client = this.client(parameters.client_id);
     if (typeof parameters.redirect_uri !== 'string' || !client.redirectUris.includes(parameters.redirect_uri)) {
       throw oauthError('invalid_request', 'redirect_uri 与登记的回调地址不完全一致');
@@ -171,11 +200,13 @@ class OAuthProvider {
     if (this.consents.size >= MAX_PENDING) throw oauthError('temporarily_unavailable', '待确认的授权过多，请稍后重试', 503);
     if (!sessionId || !this.isSubjectActive(subject)) throw oauthError('access_denied', '账号已失效，请重新登录', 403);
     const { client, key, ...request } = this.validateAuthorization(parameters, issuer);
+    const auto = Boolean(request.auto);
     const id = random('consent_');
     const csrfToken = random();
     const keyAccess = normalizeKeyAccess(key);
     this.consents.set(id, {
-      ...request, clientId: client.id, clientRevision: client.revision, sourceKeyId: key.id,
+      ...request, autoName: auto ? request.name : undefined,
+      clientId: auto ? AUTO_CLIENT_ID : client.id, clientRevision: auto ? '' : client.revision, sourceKeyId: key.id,
       keyAccess, subject: { ...subject }, sessionHash: hashToken(sessionId), csrfHash: hashToken(csrfToken), issuer,
       expiresAt: this.now() + CONSENT_TTL_MS
     });
@@ -183,8 +214,10 @@ class OAuthProvider {
     const models = catalog.filter((model) => isKeyModelAllowed(key, model.id, this.getConfig(), catalog));
     return {
       request_id: id, csrf_token: csrfToken, expires_in: CONSENT_TTL_MS / 1000,
-      client: { id: client.id, name: client.name, redirectUri: request.redirectUri },
+      auto,
+      client: auto ? { name: request.name, redirectUri: request.redirectUri } : { id: client.id, name: client.name, redirectUri: request.redirectUri },
       user: { username: subject.username }, sourceKey: { id: key.id, name: key.name },
+      sourceKeys: auto ? this.getConfig().localApiKeys.filter((item) => item.enabled !== false).map((item) => ({ id: item.id, name: item.name })) : undefined,
       scopes: request.scopes.map((id) => ({ id, description: SCOPES[id] })),
       modelAccessMode: keyAccess.modelAccessMode, models: models.map(({ id }) => id)
     };
@@ -198,9 +231,25 @@ class OAuthProvider {
       throw oauthError('invalid_request', '授权确认已过期或不属于当前会话，请重新发起授权', 403);
     }
     if (typeof body.approve !== 'boolean') throw oauthError('invalid_request', '请明确选择允许或拒绝授权');
-    const client = this.client(pending.clientId);
-    if (client.revision !== pending.clientRevision || !this.isSubjectActive(pending.subject)) throw oauthError('access_denied', '应用或账号已变更，请重新授权', 403);
-    this.sourceKey(client);
+    const auto = Boolean(pending.autoName);
+    let client = null;
+    if (auto) {
+      // 首次连接：由当前登录账号选择来源 Key，按精确回调地址自动登记或复用应用。
+      const key = this.getConfig().localApiKeys.find((item) => item.id === String(body.source_key_id || '') && item.enabled !== false);
+      if (!key) throw oauthError('invalid_request', '请选择有效的来源 Key');
+      const existing = this.getConfig().oauthClients.find((item) => item.enabled !== false && item.redirectUris.includes(pending.redirectUri));
+      client = this.saveClient({ name: pending.autoName, redirectUris: [pending.redirectUri], sourceKeyId: key.id }, existing?.id || '');
+      pending.clientId = client.id;
+      // saveClient 返回不含 revision 的公开视图；挂载授权码时需要实际版本号。
+      pending.clientRevision = this.client(client.id).revision;
+      pending.sourceKeyId = key.id;
+      pending.keyAccess = normalizeKeyAccess(key);
+    } else {
+      client = this.client(pending.clientId);
+      if (client.revision !== pending.clientRevision || !this.isSubjectActive(pending.subject)) throw oauthError('access_denied', '应用或账号已变更，请重新授权', 403);
+      this.sourceKey(client);
+    }
+    if (!this.isSubjectActive(pending.subject)) throw oauthError('access_denied', '账号已变更，请重新授权', 403);
     const redirect = new URL(pending.redirectUri);
     redirect.searchParams.set('state', pending.state);
     redirect.searchParams.set('iss', issuer);
@@ -270,10 +319,12 @@ class OAuthProvider {
 
   exchangeCode(body, issuer) {
     this.cleanup();
-    const client = this.client(body.client_id);
+    const auto = body.client_id === AUTO_CLIENT_ID;
+    const client = auto ? null : this.client(body.client_id);
     const codeHash = hashToken(body.code);
     const pending = this.codes.get(codeHash);
-    if (!pending || pending.clientId !== client.id || pending.clientRevision !== client.revision
+    if (!pending
+      || (!auto && (pending.clientId !== client.id || pending.clientRevision !== client.revision))
       || pending.redirectUri !== body.redirect_uri || pending.issuer !== issuer || !this.isSubjectActive(pending.subject)) {
       throw oauthError('invalid_grant', '授权码无效、已使用或已过期');
     }
@@ -282,10 +333,19 @@ class OAuthProvider {
     }
     const challenge = crypto.createHash('sha256').update(body.code_verifier).digest('base64url');
     if (!crypto.timingSafeEqual(Buffer.from(challenge), Buffer.from(pending.challenge))) throw oauthError('invalid_grant', 'PKCE 校验失败');
-    this.sourceKey(client);
+    if (auto) {
+      // 自动登记的授权码：客户端在确认时才创建，兑换时再校验其实际归属与来源 Key。
+      const created = this.getConfig().oauthClients.find((item) => item.id === pending.clientId && item.enabled !== false);
+      if (!created || created.revision !== pending.clientRevision
+        || !this.getConfig().localApiKeys.some((item) => item.id === pending.sourceKeyId && item.enabled !== false)) {
+        throw oauthError('invalid_grant', '授权码无效、已使用或已过期');
+      }
+    } else {
+      this.sourceKey(client);
+    }
     const now = this.now();
     const grant = {
-      id: random('oauth_grant_'), clientId: client.id, clientRevision: client.revision, sourceKeyId: pending.sourceKeyId,
+      id: random('oauth_grant_'), clientId: pending.clientId, clientRevision: pending.clientRevision, sourceKeyId: pending.sourceKeyId,
       subject: pending.subject, keyAccess: pending.keyAccess, scopes: pending.scopes, status: 'active',
       createdAt: iso(now), expiresAt: iso(now + (pending.scopes.includes('offline_access') ? REFRESH_TTL_MS : ACCESS_TTL_MS)),
       usedRefreshHashes: [], cancelledAt: null, cancelReason: ''
@@ -293,7 +353,7 @@ class OAuthProvider {
     // 换码过程没有 await；持久化成功后再删除，确保并发请求只能成功一次。
     const result = this.issueTokens(grant);
     this.codes.delete(codeHash);
-    return result;
+    return auto ? { ...result, client_id: pending.clientId } : result;
   }
 
   refresh(body) {
@@ -405,4 +465,4 @@ class OAuthProvider {
   }
 }
 
-module.exports = { OAuthProvider, ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX, SCOPES, ACCESS_TTL_MS, REFRESH_TTL_MS, normalizeOAuthState, normalizeOAuthClient, oauthClientPublic, oauthError };
+module.exports = { OAuthProvider, ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX, AUTO_CLIENT_ID, SCOPES, ACCESS_TTL_MS, REFRESH_TTL_MS, normalizeOAuthState, normalizeOAuthClient, oauthClientPublic, oauthError };

@@ -21,7 +21,9 @@
           <div><dt>当前账号</dt><dd id="authorizeAccount"></dd></div>
           <div><dt>回调地址</dt><dd><code id="authorizeRedirect"></code></dd></div>
           <div><dt>权限来源</dt><dd id="authorizeSource"></dd></div>
+          <div id="authorizeSourceKeyRow" class="hidden"><dt>选择来源 Key</dt><dd><select id="authorizeSourceKey" class="oauth-select" aria-label="选择来源 Key"></select></dd></div>
         </dl>
+        <p id="authorizeAutoNotice" class="help hidden">首次连接：允许授权后将使用所选来源 Key 自动登记此应用。若已存在使用相同回调地址的登记应用，将直接复用并使该应用的旧令牌失效。</p>
         <h3>应用请求以下权限</h3>
         <ul id="authorizeScopes" class="oauth-scopes"></ul>
         <details class="oauth-models"><summary id="authorizeModelSummary">可用模型</summary><ul id="authorizeModels"></ul></details>

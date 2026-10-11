@@ -1,6 +1,6 @@
 {
   "name": "sakura-ai-gateway",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Sakura-AI-Gateway: an OpenAI/Anthropic compatible gateway for configurable upstream providers.",

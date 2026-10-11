@@ -161,6 +161,65 @@ async function main() {
       assert.equal((await json(`/v1/${endpoint}`, payload('gpt-two'), bearer())).status, 403);
     }
     assert.deepEqual(observed, ['gpt-one', 'gpt-one', 'gpt-one']);
+    // 首次连接的自动登记：接入方不预登记 Client，账号确认时选择来源 Key。
+    const autoRedirect = 'http://localhost:34567/callback?source=auto';
+    const autoParams = new URLSearchParams({ client_id: 'auto', name: 'Life Dashboard', redirect_uri: autoRedirect, response_type: 'code', state: 'auto-state',
+      code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', scope: 'models:read models:invoke offline_access' });
+    assert.equal((await request('/oauth/authorize?client_id=auto&response_type=code')).status, 400, '缺名称与 PKCE 的自动登记请求必须拒绝');
+    const autoNoName = await request(`/oauth/consent?${new URLSearchParams({ client_id: 'auto', redirect_uri: autoRedirect, response_type: 'code', state: 'x', code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' })}`);
+    assert.equal(autoNoName.status, 400, '自动登记必须携带应用名称');
+    const sameHost = new URLSearchParams(autoParams);
+    sameHost.set('redirect_uri', `${base}/callback`);
+    assert.equal((await request(`/oauth/consent?${sameHost}`, { headers: accountHeaders() })).status, 400, '同主机名回调不能自动登记');
+    assert.equal((await request(`/oauth/consent?${autoParams}`)).status, 401, '匿名不能自动登记');
+    const autoDetails = ok(await request(`/oauth/consent?${autoParams}`, { headers: accountHeaders() }));
+    assert.equal(autoDetails.auto, true);
+    assert.equal(autoDetails.client.name, 'Life Dashboard');
+    assert.equal('id' in autoDetails.client, false);
+    assert.ok(autoDetails.sourceKeys.length >= 2);
+    const autoSecond = ok(await request(`/oauth/consent?${new URLSearchParams([...autoParams, ['key_id', restricted.id]])}`, { headers: accountHeaders() }));
+    assert.deepEqual(autoSecond.models, ['gpt-one']);
+    assert.equal(autoSecond.sourceKey.id, restricted.id);
+    for (const missing of [{}, { source_key_id: 'missing-key' }]) {
+      const failed = await json('/oauth/consent', { request_id: autoDetails.request_id, csrf_token: autoDetails.csrf_token, approve: true, ...missing }, accountHeaders());
+      assert.equal(failed.status, 400, '未选来源 Key 的确认必须失败');
+    }
+    const autoRedirected = new URL(ok(await json('/oauth/consent', { request_id: autoDetails.request_id, csrf_token: autoDetails.csrf_token, approve: true, source_key_id: restricted.id }, accountHeaders())).redirect);
+    assert.equal(autoRedirected.origin + autoRedirected.pathname, 'http://localhost:34567/callback');
+    assert.equal(autoRedirected.searchParams.get('state'), 'auto-state');
+    assert.equal(autoRedirected.searchParams.get('source'), 'auto');
+    assert.equal(autoRedirected.searchParams.get('iss'), base);
+    const autoCode = autoRedirected.searchParams.get('code');
+    const autoClient = ok(await request('/api/admin/oauth-clients')).clients.find((item) => item.redirectUris.includes(autoRedirect));
+    assert.ok(autoClient, '确认授权后应自动登记应用');
+    assert.equal(autoClient.name, 'Life Dashboard');
+    assert.equal(autoClient.sourceKeyId, restricted.id);
+    const wrongVerifier = crypto.randomBytes(32).toString('base64url');
+    assert.equal((await form('/oauth/token', { grant_type: 'authorization_code', client_id: 'auto', redirect_uri: autoRedirect, code_verifier: wrongVerifier, code: autoCode })).body.error, 'invalid_grant');
+    assert.equal((await form('/oauth/token', { grant_type: 'authorization_code', client_id: client.id, redirect_uri: autoRedirect, code_verifier: verifier, code: autoCode })).body.error, 'invalid_grant', '自动登记的授权码不能绑给其他应用');
+    assert.equal((await form('/oauth/token', { grant_type: 'authorization_code', client_id: 'auto', redirect_uri: `${autoRedirect}&changed=1`, code_verifier: verifier, code: autoCode })).body.error, 'invalid_grant', '回调地址必须逐字符匹配');
+    const autoTokens = ok(await form('/oauth/token', { grant_type: 'authorization_code', client_id: 'auto', redirect_uri: autoRedirect, code_verifier: verifier, code: autoCode }));
+    assert.equal(autoTokens.client_id, autoClient.id, '换码响应必须带回实际 Client ID');
+    const autoBearer = { Authorization: `Bearer ${autoTokens.access_token}` };
+    ok(await request('/v1/models', { headers: autoBearer }));
+    const autoConfig = ok(await request('/api/integration/config', { headers: autoBearer }));
+    assert.equal(autoConfig.authorization.clientId, autoClient.id);
+    assert.equal(autoConfig.authorization.type, 'oauth');
+    assert.equal(JSON.stringify(autoConfig).includes(source.key), false, '自动登记也不能泄露原始 Key');
+    ok(await json('/v1/chat/completions', { model: 'gpt-one', messages: [{ role: 'user', content: 'auto flow' }] }, autoBearer));
+    const autoRefreshed = ok(await form('/oauth/token', { grant_type: 'refresh_token', client_id: autoClient.id, refresh_token: autoTokens.refresh_token }));
+    assert.equal((await request('/v1/models', { headers: autoBearer })).status, 401, '刷新后旧访问令牌立即失效');
+    const refreshedBearer = { Authorization: `Bearer ${autoRefreshed.access_token}` };
+    ok(await request('/v1/models', { headers: refreshedBearer }));
+    // 相同回调再次确认应复用已登记应用，而不是重复创建
+    const autoAgain = ok(await request(`/oauth/consent?${autoParams}`, { headers: accountHeaders() }));
+    const againRedirect = new URL(ok(await json('/oauth/consent', { request_id: autoAgain.request_id, csrf_token: autoAgain.csrf_token, approve: true, source_key_id: restricted.id }, accountHeaders())).redirect);
+    const againTokens = ok(await form('/oauth/token', { grant_type: 'authorization_code', client_id: 'auto', redirect_uri: autoRedirect, code_verifier: verifier, code: againRedirect.searchParams.get('code') }));
+    assert.equal(againTokens.client_id, autoClient.id);
+    assert.equal(ok(await request('/api/admin/oauth-clients')).clients.filter((item) => item.redirectUris.includes(autoRedirect)).length, 1, '不能重复登记');
+    assert.equal((await request('/v1/models', { headers: refreshedBearer })).status, 401, '复用登记应使该应用的旧令牌失效');
+    ok(await form('/oauth/revoke', { client_id: autoClient.id, token: againTokens.refresh_token }));
+    assert.equal((await request('/v1/models', { headers: { Authorization: `Bearer ${againTokens.access_token}` } })).status, 401);
     // 无论回环、远程，还是附带管理 Cookie，都不允许模型令牌跨越到管理面。
     const remoteHeaders = { ...bearer(), 'X-Forwarded-For': '203.0.113.42' };
     for (const headers of [bearer(), remoteHeaders, { ...accountHeaders(), ...bearer() }, { Authorization: `bearer ${tokens.access_token}` }, { 'X-API-Key': tokens.access_token }, bearer(tokens.refresh_token)]) {
@@ -177,7 +236,8 @@ async function main() {
     ok(await json('/api/admin/config/import', { ...backup, preserveCredentials: true }));
     ok(await request('/v1/models', { headers: bearer() }));
     const myGrants = ok(await request('/oauth/grants', { headers: accountHeaders() })).grants;
-    assert.equal(myGrants.length, 1);
+    // 前面自动登记流程会留下已撤销的授权记录；这里只统计仍然有效的授权。
+    assert.equal(myGrants.filter((item) => item.status === 'active').length, 1);
     assert.equal(JSON.stringify(myGrants).includes('TokenHash'), false);
     assert.deepEqual(ok(await request('/oauth/grants', { headers: otherHeaders })).grants, []);
     assert.equal((await json('/oauth/grants/revoke', { id: myGrants[0].id }, otherHeaders)).status, 404);
@@ -267,11 +327,12 @@ async function main() {
       assert.equal(status, 400, `不可信代理/远程来源不能绕过 HTTPS：${JSON.stringify(headers)}`);
     }
     const fullBackup = ok(await request('/api/admin/config/export'));
+    const clientsBefore = ok(await request('/api/admin/oauth-clients')).clients.map((item) => item.id);
     const invalidBackup = JSON.parse(JSON.stringify(fullBackup));
     invalidBackup.preserveCredentials = false;
     invalidBackup.config.oauthClients[0].redirectUris = ['http://evil.example/callback'];
     assert.equal((await json('/api/admin/config/import', invalidBackup)).status, 400);
-    assert.equal(ok(await request('/api/admin/oauth-clients')).clients.length, 1, '非法导入不能部分改写配置');
+    assert.deepEqual(ok(await request('/api/admin/oauth-clients')).clients.map((item) => item.id), clientsBefore, '非法导入不能部分改写配置');
     ok(await json('/api/admin/config/import', { ...fullBackup, preserveCredentials: false }));
     assert.equal((await request('/oauth/grants', { headers: accountHeaders() })).status, 401, '导入凭据必须清除旧登录会话');
     const oldBackup = JSON.parse(JSON.stringify(fullBackup));

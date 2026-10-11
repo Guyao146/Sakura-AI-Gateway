@@ -260,7 +260,7 @@ function adminRequestIsSameOrigin(req, access) {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key, Accept, Cache-Control',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS'
   };
 }
@@ -2150,7 +2150,8 @@ async function handleIntegration(req, res, pathname) {
     if (typeof token === 'string' && token.startsWith(ACCESS_TOKEN_PREFIX)) {
       try {
         const { key, grant } = oauthProvider.authenticate(token, 'models:read');
-        sendJson(res, 200, { ...buildConfigResponse({ key, models: accessibleModelsForKey(key) }), authorization: { id: grant.id, type: 'oauth', scopes: grant.scopes } }, { 'Cache-Control': 'no-store' });
+      // 自动登记的接入方在换码后还不知道自己的 Client ID；配置接口一并返回，供刷新与撤销使用。
+        sendJson(res, 200, { ...buildConfigResponse({ key, models: accessibleModelsForKey(key) }), authorization: { id: grant.id, type: 'oauth', scopes: [...grant.scopes], clientId: grant.clientId } }, { 'Cache-Control': 'no-store' });
       } catch (error) {
         sendJson(res, error.statusCode || 401, integrationErrorBody(error.oauthCode || 'invalid_token', error.message));
       }

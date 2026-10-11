@@ -26,9 +26,11 @@
     }));
   }
 
-  async function load() {
+  async function load(keyId) {
     try {
-      const response = await fetch(`/oauth/consent?${parameters}`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+      // 首次连接允许切换来源 Key；切换时携带 key_id 重新读取该 Key 的可用模型。
+      const search = keyId ? new URLSearchParams([...parameters, ['key_id', keyId]]) : parameters;
+      const response = await fetch(`/oauth/consent?${search}`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
       const body = await response.json();
       if (response.status === 401 && body.login_url) { login(body.login_url); return; }
       if (!response.ok) throw new Error(body.error_description || '无法读取授权请求');
@@ -37,6 +39,16 @@
       $('#authorizeAccount').textContent = body.user.username;
       $('#authorizeRedirect').textContent = body.client.redirectUri;
       $('#authorizeSource').textContent = body.sourceKey.name;
+      const row = $('#authorizeSourceKeyRow');
+      const keys = Array.isArray(body.sourceKeys) ? body.sourceKeys : [];
+      if (keys.length > 1) {
+        const select = $('#authorizeSourceKey');
+        select.replaceChildren(...keys.map((key) => Object.assign(document.createElement('option'), { value: key.id, textContent: key.name })));
+        select.value = body.sourceKey.id;
+        select.onchange = () => { if (!submitting) load(select.value); };
+        row.classList.remove('hidden');
+      } else row.classList.add('hidden');
+      $('#authorizeAutoNotice').classList.toggle('hidden', !body.auto);
       list('#authorizeScopes', body.scopes.map((scope) => scope.description));
       list('#authorizeModels', body.models);
       $('#authorizeModelSummary').textContent = `当前可用模型（${body.models.length} 个）`;
@@ -60,7 +72,11 @@
     try {
       const response = await fetch('/oauth/consent', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ request_id: consent.request_id, csrf_token: consent.csrf_token, approve })
+        // 首次连接需要在确认时选择来源 Key；只有一个 Key 时沿用服务端预选值。
+        body: JSON.stringify(consent.auto ? {
+          request_id: consent.request_id, csrf_token: consent.csrf_token, approve,
+          source_key_id: $('#authorizeSourceKeyRow').classList.contains('hidden') ? consent.sourceKey.id : $('#authorizeSourceKey').value
+        } : { request_id: consent.request_id, csrf_token: consent.csrf_token, approve })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error_description || '授权确认失败，请重新发起授权');
