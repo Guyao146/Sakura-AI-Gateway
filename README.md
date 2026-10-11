@@ -454,4 +454,4 @@ Sakura-AI-Gateway 采用 [Sakura-License](LICENSE)：源码可用，受覆盖衍
 
 ## 社区
 
-本项目已在 "LinuxDo - 新的理想型社区" 公开发布
+本项目已在 "LinuxDo - 新的理想型社区" 公开发布，创建美好社区，你我共享
