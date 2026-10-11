@@ -6,7 +6,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-admin-auth-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-admin-auth-'));
 const gatewayPort = 27000 + Math.floor(Math.random() * 1000);
 const remoteHost = `gateway-${gatewayPort}.example.test`;
 const remoteHeaders = { Host: remoteHost, 'X-Forwarded-For': '203.0.113.77' };
@@ -61,7 +61,7 @@ function spawnGateway() {
       ...process.env,
       PORT: String(gatewayPort),
       HOST: '127.0.0.1',
-      LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory,
+      SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory,
       TRUSTED_PROXY_ADDRESSES: '127.0.0.1,::1'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -74,7 +74,7 @@ async function main() {
   gateway.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   const baseUrl = `http://127.0.0.1:${gatewayPort}`;
   try {
-    await waitForOutput(gateway, 'Local Model Gateway 已启动');
+    await waitForOutput(gateway, 'Sakura-AI-Gateway 已启动');
 
     // 远程默认走 OIDC，此时未配置 → 503
     const initialStatus = await request(`${baseUrl}/auth/status`, { headers: remoteHeaders });
@@ -146,7 +146,7 @@ async function main() {
       body: JSON.stringify({ username, password })
     });
     assert.equal(goodLogin.status, 200, goodLogin.raw);
-    const sessionCookie = cookiePair(goodLogin.headers['set-cookie'], 'lmg_admin_session');
+    const sessionCookie = cookiePair(goodLogin.headers['set-cookie'], 'sakura_ai_gateway_admin_session');
     assert.ok(sessionCookie, '登录应返回会话 Cookie');
     assert.match((Array.isArray(goodLogin.headers['set-cookie']) ? goodLogin.headers['set-cookie'] : []).join('\n'), /HttpOnly/);
     assert.equal(goodLogin.json.user.username, username);

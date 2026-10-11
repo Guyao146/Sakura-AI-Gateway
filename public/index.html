@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Model Gateway</title>
+  <title>Sakura-AI-Gateway</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">LOCAL MODEL GATEWAY</div>
-        <h1>本地模型网关</h1>
+        <div class="eyebrow">Sakura-AI-Gateway</div>
+        <h1>Sakura-AI-Gateway</h1>
         <p class="subtitle">统一管理上游站点，把 OpenAI / Claude 请求路由到你的模型服务。</p>
       </div>
       <div class="topbar-side">
@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Local Model Gateway</span><strong>v2.5.2</strong></div>
+        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v2.6.0</strong></div>
       </aside>
 
       <div class="content">
@@ -143,8 +143,15 @@
           <div><h2>请求统计</h2></div>
           <div class="panel-actions"><button id="exportRecentUsageButton" class="button secondary">导出近 100 条</button><button id="exportAllUsageButton" class="button secondary">导出全部用量</button><button id="importUsageButton" class="button secondary">导入用量</button><input id="usageFileInput" type="file" accept="application/json,.json" hidden><button id="clearMetricsButton" class="button danger-outline">清空统计</button></div>
         </div>
+        <div class="range-filter" role="group" aria-label="按时间查看请求统计">
+          <label class="range-field">开始时间<input id="metricsRangeFrom" type="datetime-local"></label>
+          <label class="range-field">结束时间<input id="metricsRangeTo" type="datetime-local"></label>
+          <button id="applyMetricsRangeButton" type="button" class="button secondary">按时间统计</button>
+          <button id="resetMetricsRangeButton" type="button" class="button secondary">返回全部统计</button>
+          <span id="metricsRangeHint" class="muted"></span>
+        </div>
         <div class="stats-grid" id="statsGrid"></div>
-        <div class="subheading-row"><h3>按上游统计</h3><span class="muted">每 5 秒自动刷新</span></div>
+        <div class="subheading-row"><h3 id="metricsScopeTitle">按上游统计（全部）</h3><span class="muted">每 5 秒自动刷新</span></div>
         <div id="upstreamStats" class="upstream-stats"></div>
       </section>
 
@@ -177,7 +184,7 @@
           <div class="about-brand">
             <span class="about-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><mask id="sakuraMarkAbout"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="11.8" r="2.1" fill="#000"/></mask><g fill="currentColor" mask="url(#sakuraMarkAbout)"><circle cx="12" cy="6.5" r="4.1"/><circle cx="6.77" cy="10.3" r="4.1"/><circle cx="8.77" cy="16.45" r="4.1"/><circle cx="15.23" cy="16.45" r="4.1"/><circle cx="17.23" cy="10.3" r="4.1"/></g></svg></span>
             <div class="about-brand-copy">
-              <p class="about-kicker">LOCAL MODEL GATEWAY</p>
+              <p class="about-kicker">Sakura-AI-Gateway</p>
               <h3>让模型连接更简单。</h3>
             </div>
           </div>
@@ -188,9 +195,9 @@
             <li>OpenAI / Anthropic / Responses</li>
           </ul>
           <nav class="about-actions" aria-label="项目资源">
-            <a class="button primary" href="https://github.com/Guyao146/Local-Model-Gateway" target="_blank" rel="noopener noreferrer">查看源码 <span aria-hidden="true">↗</span></a>
-            <a class="button secondary" href="https://wiki.mcylyr.cn/#/docs/local-model-gateway" target="_blank" rel="noopener noreferrer">使用文档 <span aria-hidden="true">↗</span></a>
-            <a class="button secondary" href="https://github.com/Guyao146/Local-Model-Gateway/issues" target="_blank" rel="noopener noreferrer">问题反馈 <span aria-hidden="true">↗</span></a>
+            <a class="button primary" href="https://github.com/Guyao146/Sakura-AI-Gateway" target="_blank" rel="noopener noreferrer">查看源码 <span aria-hidden="true">↗</span></a>
+            <a class="button secondary" href="https://github.com/Guyao146/Sakura-AI-Gateway/blob/main/wiki/index.md" target="_blank" rel="noopener noreferrer">使用文档 <span aria-hidden="true">↗</span></a>
+            <a class="button secondary" href="https://github.com/Guyao146/Sakura-AI-Gateway/issues" target="_blank" rel="noopener noreferrer">问题反馈 <span aria-hidden="true">↗</span></a>
           </nav>
         </div>
         <div class="about-grid">
@@ -204,8 +211,8 @@
               <li><strong>特定商用需书面授权</strong><span>开展许可定义的商业利用前，须取得明确书面授权。</span></li>
             </ul>
             <div class="about-license-links">
-              <a class="about-link" href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSE" target="_blank" rel="noopener noreferrer"><span>阅读许可正文</span><span aria-hidden="true">↗</span></a>
-              <a class="about-link" href="https://github.com/Guyao146/Local-Model-Gateway/blob/main/LICENSING.md" target="_blank" rel="noopener noreferrer"><span>查看采用声明</span><span aria-hidden="true">↗</span></a>
+              <a class="about-link" href="https://github.com/Guyao146/Sakura-AI-Gateway/blob/main/LICENSE" target="_blank" rel="noopener noreferrer"><span>阅读许可正文</span><span aria-hidden="true">↗</span></a>
+              <a class="about-link" href="https://github.com/Guyao146/Sakura-AI-Gateway/blob/main/LICENSING.md" target="_blank" rel="noopener noreferrer"><span>查看采用声明</span><span aria-hidden="true">↗</span></a>
             </div>
             <p class="about-license-note">本许可不是 OSI 批准的开源许可证。v2.4.0 及之前的历史发布版本仍按 LGPL-2.1 授权，已合法取得的权利不受影响。</p>
           </article>

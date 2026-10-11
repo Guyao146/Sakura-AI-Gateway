@@ -116,8 +116,8 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/admin/upstreams` | 添加上游（返回 `201`，apiKey 掩码） |
-| PUT | `/api/admin/upstreams/:id` | 更新上游；apiKey 留空时复用已保存 Key |
-| DELETE | `/api/admin/upstreams/:id` | 删除上游（同时清理其路由、健康与余额缓存） |
+| PUT | `/api/admin/upstreams/:id` | 更新上游；apiKey 留空时复用已保存 Key。`enabled:false` 停用后，模型目录不再展示该上游的模型（重新启用后自动恢复，已保存的模型选择不删除） |
+| DELETE | `/api/admin/upstreams/:id` | 删除上游（同时清理其路由、本地模型选择、健康与余额缓存） |
 | POST | `/api/admin/upstreams/:id/test` | 连接测试 |
 | POST | `/api/admin/upstreams/:id/sync-models` | 同步该上游模型列表 |
 | POST | `/api/admin/upstreams/:id/thinking-probe` | 只探测该上游的思考强度档位（返回结果 + 最新模型目录） |
@@ -207,6 +207,7 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 | --- | --- | --- |
 | GET | `/api/admin/metrics` | 聚合计数 + 一页日志；支持 `?limit=&offset=` |
 | GET | `/api/admin/metrics/logs` | 纯日志分页接口，返回 `{items, limit, offset, total, hasMore, maxLogs}` |
+| GET | `/api/admin/metrics/range?from=&to=` | 按时间范围（闭区间，ISO 时间）聚合统计，返回 `{from, to, matched, totals, byUpstream}` |
 | GET | `/api/admin/metrics/export?scope=recent\|all` | 导出最近 100 条或当前保留的全部用量记录（JSON） |
 | DELETE | `/api/admin/metrics` | 清空聚合计数与 JSONL 日志 |
 
@@ -214,11 +215,29 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 ---
 
+### 第三方接入授权
+
+供外部软件（如桌面客户端、IDE 插件）把本网关添加为其上游，无需进入后台手动复制 Key：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/integration/verify` | 校验本地 API Key 并登记接入；成功返回一次性明文令牌 |
+| POST | `/api/integration/revoke` | 凭令牌自助注销接入 |
+| GET | `/api/integration/status` | 管理员查看接入列表（只含哈希，无明文） |
+
+- `verify` 的 body 为 `{ apiKey, label? }`；`apiKey` 必须是网关本地已启用且有权访问至少一个模型的 Key。
+  成功返回 `{ authorization: { id, token, label, createdAt, expiresAt? } }`，**明文令牌只出现这一次**，落盘只存 SHA-256。
+- `revoke` 由接入方凭令牌自助调用，无需管理员；删除来源本地 Key 会级联取消其全部接入。
+- 三个接口按来源 IP 限流（每分钟 60 次），超限返回 429。
+- 登记随配置持久化（`config.integrations`），备份导出包含哈希记录；`status` 与导出均无明文。
+
+---
+
 ## 认证与健康接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查：`{status:'ok', service:'local-model-gateway', time}` |
+| GET | `/health` | 健康检查：`{status:'ok', service:'sakura-ai-gateway', time}` |
 | GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, remoteMode, oidcConfigured, passwordConfigured, user}` |
 | GET | `/auth/login` | 登录页；按 `remoteMode` 显示 Authentik 登录或账号密码表单 |
 | POST | `/auth/password/login` | 本地账号密码登录，body 为 `{ username, password }`；成功返回会话 Cookie |

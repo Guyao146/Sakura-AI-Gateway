@@ -19,7 +19,7 @@ finally { Remove-Item Env:GATEWAY_BROWSER_TEST }
 无第三方依赖，全部测试是纯 Node 脚本（`node:assert/strict`）。运行全部测试：
 
 ```powershell
-cd local-model-gateway
+cd Sakura-AI-Gateway
 npm.cmd test
 # 等价于依次执行 package.json 中注册的测试脚本
 ```
@@ -28,6 +28,8 @@ npm.cmd test
 
 | 文件 | 类型 | 覆盖 |
 | --- | --- | --- |
+| `test/branding.test.js` | 单元 | 项目名、构建产物、仓库/镜像与旧名称残留检查 |
+| `test/brand-migration.test.js` | 单元/进程 | 新旧环境变量优先级、数据/指标目录与桌面数据迁移 |
 | `test/protocol.test.js` | 单元 | OpenAI ↔ Anthropic、Responses 转换、endpoint 拼接 |
 | `test/routing.test.js` | 单元 | 四种分流策略的排序与游标、权重分布 |
 | `test/model-groups.test.js` | 单元 | 模型目录分组、勾选合并、轮询池勾选（`pool-provider`）、日志分页接口存在性 |
@@ -41,6 +43,8 @@ npm.cmd test
 | `test/stream.integration.test.js` | 集成 | 流式响应转换与 SSE 转发 |
 | `test/model-selection.integration.test.js` | 集成 | 模型选择保存、`upstreamIds` 轮询池、固定站、旧备份合并迁移 |
 | `test/model-case.integration.test.js` | 集成 | 模型名/中转站大小写合并、按各站拼写转发、重复选择拒绝、备份导入合并 |
+| `test/metrics-range.integration.test.js` | 集成 | `/api/admin/metrics/range` 参数校验、闭区间命中、范围与全量统计互不影响 |
+| `test/integration-auth.test.js` | 集成 | 接入授权 verify/revoke/status、令牌哈希、Key 删除级联取消、备份导入保留 |
 
 集成测试模式：
 

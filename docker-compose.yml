@@ -1,13 +1,13 @@
 services:
   gateway:
-    image: ghcr.io/guyao146/local-model-gateway:${GATEWAY_IMAGE_TAG:-latest}
+    image: ghcr.io/guyao146/sakura-ai-gateway:${GATEWAY_IMAGE_TAG:-latest}
     pull_policy: always
     restart: unless-stopped
     init: true
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      LOCAL_MODEL_GATEWAY_DATA_DIR: /app/data
+      SAKURA_AI_GATEWAY_DATA_DIR: /app/data
       AUTHENTIK_ISSUER_URL: ${AUTHENTIK_ISSUER_URL:-}
       AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
       AUTHENTIK_CLIENT_SECRET: ${AUTHENTIK_CLIENT_SECRET:-}
@@ -33,3 +33,5 @@ services:
 
 volumes:
   gateway-data:
+    # 改目录/Compose 项目名时可指定现有卷，避免被当作全新部署。
+    name: ${SAKURA_AI_GATEWAY_VOLUME:-sakura-ai-gateway-data}

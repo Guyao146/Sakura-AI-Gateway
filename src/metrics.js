@@ -1,10 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DATA_DIR = process.env.LOCAL_MODEL_GATEWAY_DATA_DIR || path.join(__dirname, '..', 'data');
+// 与配置读取保持一致：新名称优先，旧变量仅用于升级兼容。
+const DATA_DIR = (process.env.SAKURA_AI_GATEWAY_DATA_DIR ?? process.env.LOCAL_MODEL_GATEWAY_DATA_DIR) || path.join(__dirname, '..', 'data');
 const METRICS_PATH = path.join(DATA_DIR, 'metrics.json');
 const LOG_PATH = path.join(DATA_DIR, 'metrics-log.jsonl');
-const parsedMaxLogs = Number(process.env.LOCAL_MODEL_GATEWAY_MAX_LOGS);
+const parsedMaxLogs = Number(process.env.SAKURA_AI_GATEWAY_MAX_LOGS ?? process.env.LOCAL_MODEL_GATEWAY_MAX_LOGS);
 const MAX_LOGS = Number.isFinite(parsedMaxLogs) && parsedMaxLogs >= 100 ? Math.floor(parsedMaxLogs) : 5000;
 const DEFAULT_LOG_LIMIT = 100;
 const MAX_LOG_LIMIT = 500;
@@ -200,45 +201,29 @@ function normalizeDiagnostics(diag) {
   return hasContent ? result : null;
 }
 
-function recordRequest(entry) {
-  const usage = normalizeUsage(entry.usage);
+// 聚合单条日志到 totals/byUpstream：实时记录与时间范围统计共用同一套语义。
+function aggregateInto(state, entry) {
+  // 日志里的用量可能已是归一化后的 camelCase（实时记录），也可能来自导入的 snake_case。
+  const usage = normalizeUsage({
+    prompt_tokens: entry.usage?.prompt_tokens ?? entry.usage?.input_tokens ?? entry.usage?.promptTokens,
+    completion_tokens: entry.usage?.completion_tokens ?? entry.usage?.output_tokens ?? entry.usage?.completionTokens,
+    total_tokens: entry.usage?.total_tokens ?? entry.usage?.totalTokens
+  });
   const attempts = normalizeAttempts(entry.attempts);
-  const upstreamError = normalizeErrorDetails(entry.upstreamError);
   const success = entry.success === true;
-  const logEntry = {
-    id: String(entry.id || `req_${Date.now()}`),
-    startedAt: entry.startedAt || new Date().toISOString(),
-    finishedAt: entry.finishedAt || new Date().toISOString(),
-    protocol: ['anthropic', 'responses'].includes(entry.protocol) ? entry.protocol : 'openai',
-    strategy: ['failover', 'round_robin', 'random', 'weighted'].includes(entry.strategy) ? entry.strategy : 'failover',
-    model: String(entry.model || '').slice(0, 200),
-    upstream: entry.upstream ? String(entry.upstream).slice(0, 120) : null,
-    upstreamModel: entry.upstreamModel ? String(entry.upstreamModel).slice(0, 200) : null,
-    status: Number.isInteger(entry.status) ? entry.status : 500,
-    durationMs: Math.max(0, Math.round(numberOrZero(entry.durationMs))),
-    stream: entry.stream === true,
-    success,
-    // failover 表示真的换了上游：原地重试同一个站不算切换。
-    failover: new Set(attempts.map((attempt) => attempt.upstream)).size > 1,
-    attempts,
-    usage,
-    ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {}),
-    ...(upstreamError ? { upstreamError } : {}),
-    ...(normalizeDiagnostics(entry.diag) ? { diagnostics: normalizeDiagnostics(entry.diag) } : {})
-  };
-
-  const totals = metrics.totals;
+  // failover 表示真的换了上游：原地重试同一个站不算切换。
+  const failover = entry.failover !== undefined ? entry.failover === true : attempts.length > 1;
+  const totals = state.totals;
   totals.requests += 1;
   if (success) totals.successful += 1;
   else totals.failed += 1;
-  if (logEntry.failover) totals.failovers += 1;
+  if (failover) totals.failovers += 1;
   totals.promptTokens += usage.promptTokens;
   totals.completionTokens += usage.completionTokens;
   totals.totalTokens += usage.totalTokens;
-
-  for (const [index, attempt] of attempts.entries()) {
-    const name = attempt.upstream;
-    const item = metrics.byUpstream[name] || {
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const item = state.byUpstream[attempt.upstream] || {
       requests: 0,
       successful: 0,
       failed: 0,
@@ -253,13 +238,41 @@ function recordRequest(entry) {
     if (succeeded) item.successful += 1;
     else item.failed += 1;
     // 用量只归属该上游的最后一次尝试（通常是成功的那次），不能按尝试次数重复累计。
-    if (index === attempts.map((entry) => entry.upstream).lastIndexOf(logEntry.upstream)) {
+    if (index === attempts.map((entry) => entry.upstream).lastIndexOf(entry.upstream)) {
       item.promptTokens += usage.promptTokens;
       item.completionTokens += usage.completionTokens;
       item.totalTokens += usage.totalTokens;
     }
-    metrics.byUpstream[name] = item;
+    state.byUpstream[attempt.upstream] = item;
   }
+}
+
+function recordRequest(entry) {
+  const success = entry.success === true;
+  const upstreamError = normalizeErrorDetails(entry.upstreamError);
+  const logEntry = {
+    id: String(entry.id || `req_${Date.now()}`),
+    startedAt: entry.startedAt || new Date().toISOString(),
+    finishedAt: entry.finishedAt || new Date().toISOString(),
+    protocol: ['anthropic', 'responses'].includes(entry.protocol) ? entry.protocol : 'openai',
+    strategy: ['failover', 'round_robin', 'random', 'weighted'].includes(entry.strategy) ? entry.strategy : 'failover',
+    model: String(entry.model || '').slice(0, 200),
+    upstream: entry.upstream ? String(entry.upstream).slice(0, 120) : null,
+    upstreamModel: entry.upstreamModel ? String(entry.upstreamModel).slice(0, 200) : null,
+    status: Number.isInteger(entry.status) ? entry.status : 500,
+    durationMs: Math.max(0, Math.round(numberOrZero(entry.durationMs))),
+    stream: entry.stream === true,
+    success,
+    // failover 表示真的换了上游：原地重试同一个站不算切换。
+    failover: new Set((Array.isArray(entry.attempts) ? entry.attempts : []).map((attempt) => attempt.upstream)).size > 1,
+    attempts: normalizeAttempts(entry.attempts),
+    usage: normalizeUsage(entry.usage),
+    ...(entry.error ? { error: String(entry.error).slice(0, 500) } : {}),
+    ...(upstreamError ? { upstreamError } : {}),
+    ...(normalizeDiagnostics(entry.diag) ? { diagnostics: normalizeDiagnostics(entry.diag) } : {})
+  };
+
+  aggregateInto(metrics, logEntry);
 
   logs.unshift(logEntry);
   if (logs.length > MAX_LOGS) logs.length = MAX_LOGS;
@@ -302,36 +315,42 @@ function importUsageRecords(records) {
     importedIds.add(entry.id);
     accepted.push(entry);
   }
-  const chronological = [...logs, ...accepted].sort((a, b) => new Date(a.finishedAt || a.startedAt).getTime() - new Date(b.finishedAt || b.startedAt).getTime()).slice(-MAX_LOGS);
+  const chronological = [...logs, ...accepted].sort((a, b) => new Date(a.finishedAt || a.startedAt).getTime() - new Date(b.finishedAt || a.startedAt).getTime()).slice(-MAX_LOGS);
   logs = chronological.slice().reverse();
   metrics = emptyMetrics();
-  for (const entry of chronological) {
-    const usage = entry.usage;
-    const attempts = entry.attempts;
-    const success = entry.success === true;
-    const totals = metrics.totals;
-    totals.requests += 1;
-    if (success) totals.successful += 1; else totals.failed += 1;
-    if (attempts.length > 1) totals.failovers += 1;
-    totals.promptTokens += usage.promptTokens;
-    totals.completionTokens += usage.completionTokens;
-    totals.totalTokens += usage.totalTokens;
-    for (const [index, attempt] of attempts.entries()) {
-      const item = metrics.byUpstream[attempt.upstream] || { requests: 0, successful: 0, failed: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-      item.requests += 1;
-      // HTTP 2xx 但返回错误体的尝试已标 outcome='failure'，不能按状态码算成功。
-      const succeeded = attempt.outcome === 'failure' ? false
-        : attempt.status !== null && attempt.status >= 200 && attempt.status < 400;
-      if (succeeded) item.successful += 1; else item.failed += 1;
-      // 用量只归属该上游的最后一次尝试，不能按尝试次数重复累计。
-      if (index === attempts.map((attemptEntry) => attemptEntry.upstream).lastIndexOf(entry.upstream)) { item.promptTokens += usage.promptTokens; item.completionTokens += usage.completionTokens; item.totalTokens += usage.totalTokens; }
-      metrics.byUpstream[attempt.upstream] = item;
-    }
-  }
+  // 与实时记录共用聚合语义：导入后的 totals/byUpstream 与逐条统计保持一致。
+  for (const entry of chronological) aggregateInto(metrics, entry);
   writeLogFile(chronological);
   logFileLines = chronological.length;
   saveMetrics();
   return { imported: accepted.length, duplicates, retained: logs.length, metrics: getMetrics() };
+}
+
+// 按时间范围统计明细日志：闭区间 [from, to]，与实时统计使用同一套聚合语义。
+function getRangeStats({ from, to } = {}) {
+  const start = Date.parse(String(from ?? ''));
+  const end = Date.parse(String(to ?? ''));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    throw Object.assign(new Error('时间范围参数无效：需要有效的 from 与 to'), { statusCode: 400 });
+  }
+  if (start > end) {
+    throw Object.assign(new Error('时间范围的开始时间不能晚于结束时间'), { statusCode: 400 });
+  }
+  const state = emptyMetrics();
+  let matched = 0;
+  for (const entry of logs) {
+    const time = Date.parse(entry.finishedAt || entry.startedAt);
+    if (!Number.isFinite(time) || time < start || time > end) continue;
+    matched += 1;
+    aggregateInto(state, entry);
+  }
+  return {
+    from: new Date(start).toISOString(),
+    to: new Date(end).toISOString(),
+    matched,
+    totals: { ...state.totals },
+    byUpstream: Object.fromEntries(Object.entries(state.byUpstream).map(([name, value]) => [name, { ...value }]))
+  };
 }
 
 function normalizeLimit(value) {
@@ -396,6 +415,7 @@ module.exports = {
   getMetrics,
   getLogs,
   getAllLogs,
+  getRangeStats,
   importUsageRecords,
   clearMetrics
 };

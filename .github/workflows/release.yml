@@ -1,4 +1,4 @@
-name: Build and publish release
+name: Build and publish Sakura-AI-Gateway
 
 on:
   push:
@@ -36,9 +36,10 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/guyao146/local-model-gateway:${{ github.ref_name }}
-            ghcr.io/guyao146/local-model-gateway:latest
+            ghcr.io/guyao146/sakura-ai-gateway:${{ github.ref_name }}
+            ghcr.io/guyao146/sakura-ai-gateway:latest
           labels: |
+            org.opencontainers.image.title=Sakura-AI-Gateway
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ github.ref_name }}
 
@@ -97,13 +98,13 @@ jobs:
       - name: Build Edge WebView2 client
         shell: pwsh
         run: |
-          dotnet restore clients/webview2/LocalModelGateway.WebView2.csproj
-          dotnet publish clients/webview2/LocalModelGateway.WebView2.csproj -c Release -r win-x64 --self-contained true -o clients/webview2/publish
+          dotnet restore clients/webview2/Sakura-AI-Gateway.WebView2.csproj
+          dotnet publish clients/webview2/Sakura-AI-Gateway.WebView2.csproj -c Release -r win-x64 --self-contained true -o clients/webview2/publish
           $version = node -p "require('./package.json').version"
-          $stage = Join-Path $env:RUNNER_TEMP "Local-Model-Gateway-$version-WebView2-win-x64"
+          $stage = Join-Path $env:RUNNER_TEMP "Sakura-AI-Gateway-$version-WebView2-win-x64"
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item clients/webview2/publish/* $stage -Recurse -Force
-          Compress-Archive -Path "$stage/*" -DestinationPath "Local-Model-Gateway-$version-WebView2-win-x64.zip" -CompressionLevel Optimal
+          Compress-Archive -Path "$stage/*" -DestinationPath "Sakura-AI-Gateway-$version-WebView2-win-x64.zip" -CompressionLevel Optimal
 
       - name: Build Electron client
         shell: pwsh
@@ -116,8 +117,8 @@ jobs:
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
-          git archive --format=tar --prefix="local-model-gateway-v$version/" HEAD | tar -xf - -C $env:RUNNER_TEMP
-          tar -czf "local-model-gateway-v$version.tar.gz" -C $env:RUNNER_TEMP "local-model-gateway-v$version"
+          git archive --format=tar --prefix="Sakura-AI-Gateway-v$version/" HEAD | tar -xf - -C $env:RUNNER_TEMP
+          tar -czf "Sakura-AI-Gateway-v$version.tar.gz" -C $env:RUNNER_TEMP "Sakura-AI-Gateway-v$version"
 
       - name: Publish one GitHub Release
         env:
@@ -125,11 +126,11 @@ jobs:
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
-          $webView2 = "Local-Model-Gateway-$version-WebView2-win-x64.zip"
-          $gateway = "local-model-gateway-v$version.tar.gz"
-          $electronAssets = @(Get-ChildItem clients/electron/dist -Filter "Local-Model-Gateway-$version-Electron-*.exe" | Select-Object -ExpandProperty FullName)
+          $webView2 = "Sakura-AI-Gateway-$version-WebView2-win-x64.zip"
+          $gateway = "Sakura-AI-Gateway-v$version.tar.gz"
+          $electronAssets = @(Get-ChildItem clients/electron/dist -Filter "Sakura-AI-Gateway-$version-Electron-*.exe" | Select-Object -ExpandProperty FullName)
           $setup = $electronAssets | Where-Object { $_ -match '-Setup\.exe$' } | Select-Object -First 1
           $portable = $electronAssets | Where-Object { $_ -match '-Portable\.exe$' } | Select-Object -First 1
           $assets = @($webView2, $setup, $portable, $gateway)
           foreach ($asset in $assets) { if ([string]::IsNullOrWhiteSpace($asset) -or -not (Test-Path $asset)) { throw "Missing release asset: $asset" } }
-          gh release create "${{ github.ref_name }}" $assets --repo "${{ github.repository }}" --title "Local Model Gateway $version" --generate-notes
+          gh release create "${{ github.ref_name }}" $assets --repo "${{ github.repository }}" --title "Sakura-AI-Gateway $version" --generate-notes

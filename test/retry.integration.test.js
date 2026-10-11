@@ -9,7 +9,7 @@ const { spawn } = require('node:child_process');
 // 每个上游按预设脚本依次响应，用来断言重试次数、切换时机和错误摘要。
 
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-retry-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-retry-'));
 const gatewayPort = 19100 + Math.floor(Math.random() * 500);
 
 function requestJson(url, options = {}) {
@@ -104,7 +104,7 @@ async function main() {
 
   const gateway = spawn(process.execPath, ['src/server.js'], {
     cwd: projectRoot,
-    env: { ...process.env, PORT: String(gatewayPort), LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory },
+    env: { ...process.env, PORT: String(gatewayPort), SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stderr = '';

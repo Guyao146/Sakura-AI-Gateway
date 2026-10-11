@@ -1,12 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { normalizeIntegration, integrationPublic } = require('./integration');
 
-const DATA_DIR = process.env.LOCAL_MODEL_GATEWAY_DATA_DIR || path.join(__dirname, '..', 'data');
+// 旧名称仅用于升级兼容；显式配置的新变量（包括 false/空值）优先。
+const DATA_DIR = (process.env.SAKURA_AI_GATEWAY_DATA_DIR ?? process.env.LOCAL_MODEL_GATEWAY_DATA_DIR) || path.join(__dirname, '..', 'data');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const FORCED_HOST = String(process.env.LOCAL_MODEL_GATEWAY_FORCE_HOST || '').trim();
-const FORCED_PORT = Number(process.env.LOCAL_MODEL_GATEWAY_FORCE_PORT || 0);
-const FORCE_SETTINGS = process.env.LOCAL_MODEL_GATEWAY_FORCE_SETTINGS === 'true';
+const FORCED_HOST = String((process.env.SAKURA_AI_GATEWAY_FORCE_HOST ?? process.env.LOCAL_MODEL_GATEWAY_FORCE_HOST) || '').trim();
+const FORCED_PORT = Number((process.env.SAKURA_AI_GATEWAY_FORCE_PORT ?? process.env.LOCAL_MODEL_GATEWAY_FORCE_PORT) || 0);
+const FORCE_SETTINGS = (process.env.SAKURA_AI_GATEWAY_FORCE_SETTINGS ?? process.env.LOCAL_MODEL_GATEWAY_FORCE_SETTINGS) === 'true';
 
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -59,6 +61,8 @@ function defaultConfig() {
     routes: [],
     modelSelections: [],
     modelSelectionMode: false,
+    // 第三方软件的接入授权：令牌只存哈希，取消后续授权后立即失效。
+    integrations: [],
     settings: {
       host: FORCED_HOST || process.env.HOST || '127.0.0.1',
       port: FORCED_PORT || Number(process.env.PORT || 8787),
@@ -118,7 +122,8 @@ function loadConfig() {
       upstreams: Array.isArray(parsed.upstreams) ? parsed.upstreams : [],
       routes: Array.isArray(parsed.routes) ? parsed.routes : [],
       modelSelections: Array.isArray(parsed.modelSelections) ? parsed.modelSelections : [],
-      modelSelectionMode: parsed.modelSelectionMode === true
+      modelSelectionMode: parsed.modelSelectionMode === true,
+      integrations: Array.isArray(parsed.integrations) ? parsed.integrations.map(normalizeIntegration) : []
     };
     merged.settings = normalizeSettings(parsed.settings || merged.settings);
     if (FORCE_SETTINGS || FORCED_HOST) merged.settings.host = FORCED_HOST || process.env.HOST || merged.settings.host;
@@ -160,7 +165,8 @@ function publicConfig(config) {
     routes: config.routes,
     modelSelections: config.modelSelections || [],
     modelSelectionMode: config.modelSelectionMode === true,
-    settings: config.settings
+    settings: config.settings,
+    integrations: (config.integrations || []).map(integrationPublic)
   };
 }
 

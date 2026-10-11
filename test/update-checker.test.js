@@ -8,7 +8,7 @@ const release = releaseToPublic({ tag_name: 'v1.0.0', name: 'First', body: 'note
 assert.equal(release.version, '1.0.0');
 assert.equal(release.assets[0].name, 'app.exe');
 assert.equal(releaseToPublic({ tag_name: 'not-a-version' }), null);
-assert.equal(isTrustedDownloadUrl('https://github.com/Guyao146/Local-Model-Gateway/releases/download/v1.0.0/local-model-gateway-v1.0.0.tar.gz'), true);
+assert.equal(isTrustedDownloadUrl('https://github.com/Guyao146/Sakura-AI-Gateway/releases/download/v1.0.0/Sakura-AI-Gateway-v1.0.0.tar.gz'), true);
 assert.equal(isTrustedDownloadUrl('https://example.com/update.tar.gz'), false);
 assert.equal(isTrustedDownloadUrl('http://github.com/example/update.tar.gz'), false);
 console.log('update checker tests passed');

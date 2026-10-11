@@ -2,8 +2,8 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const { verifyPassword } = require('./admin-users');
 
-const SESSION_COOKIE = 'lmg_admin_session';
-const TRANSACTION_COOKIE = 'lmg_oidc_state';
+const SESSION_COOKIE = 'sakura_ai_gateway_admin_session';
+const TRANSACTION_COOKIE = 'sakura_ai_gateway_oidc_state';
 const TRANSACTION_TTL_MS = 10 * 60 * 1000;
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 const CLOCK_TOLERANCE_SECONDS = 60;

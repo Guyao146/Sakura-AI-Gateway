@@ -12,7 +12,7 @@ const { once } = require('node:events');
 // 探测结果要能挺过后续的模型同步，且不写入请求指标、不占用熔断状态。
 
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-thinking-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-thinking-'));
 const gatewayPort = 25000 + Math.floor(Math.random() * 400);
 
 function requestJson(url, options = {}) {
@@ -164,7 +164,7 @@ async function main() {
 
   const gateway = spawn(process.execPath, ['src/server.js'], {
     cwd: projectRoot,
-    env: { ...process.env, PORT: String(gatewayPort), LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory },
+    env: { ...process.env, PORT: String(gatewayPort), SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   try {

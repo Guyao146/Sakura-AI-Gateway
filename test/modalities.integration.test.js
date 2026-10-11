@@ -55,7 +55,7 @@ async function request(url, method = 'GET', body, key) {
   return { status: response.status, body: parsed };
 }
 async function start() {
-  gateway = spawn(process.execPath, ['src/server.js'], { cwd: root, env: { ...process.env, LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory, LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1', LOCAL_MODEL_GATEWAY_FORCE_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  gateway = spawn(process.execPath, ['src/server.js'], { cwd: root, env: { ...process.env, SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory, SAKURA_AI_GATEWAY_FORCE_HOST: '127.0.0.1', SAKURA_AI_GATEWAY_FORCE_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   gateway.stdout.on('data', (chunk) => { output += chunk; });
   gateway.stderr.on('data', (chunk) => { output += chunk; });

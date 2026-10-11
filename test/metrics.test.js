@@ -4,11 +4,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 // metrics.js 在加载时读取数据目录，必须先指向临时目录再 require。
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-metrics-'));
-process.env.LOCAL_MODEL_GATEWAY_DATA_DIR = dataDir;
-process.env.LOCAL_MODEL_GATEWAY_MAX_LOGS = '100';
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-metrics-'));
+process.env.SAKURA_AI_GATEWAY_DATA_DIR = dataDir;
+process.env.SAKURA_AI_GATEWAY_MAX_LOGS = '100';
 
 const { recordRequest, getLogs, importUsageRecords, clearMetrics } = require('../src/metrics');
+const { getRangeStats } = require('../src/metrics');
 
 const longText = 'x'.repeat(800);
 
@@ -77,6 +78,50 @@ function main() {
   assert.equal(imported.imported, 1);
   const importedEntry = getLogs({ limit: 10 }).items.find((item) => item.id === 'req_metrics_imported');
   assert.deepEqual(importedEntry.upstreamError, { status: 429, code: 'rate_limited', message: 'too many requests' });
+
+  // 按时间范围统计：闭区间命中、跨边界不计、参数校验与 byUpstream 复用聚合语义。
+  clearMetrics();
+  const stamped = (id, finishedAt, upstream, extra = {}) => recordRequest({
+    id, model: 'range-model', upstream, status: 200, success: true,
+    finishedAt, startedAt: finishedAt,
+    usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+    ...extra
+  });
+  stamped('req_range_first', '2026-10-01T08:00:00Z', 'range-a', { attempts: [{ upstream: 'range-a', status: 200 }] });
+  stamped('req_range_second', '2026-10-02T12:00:00Z', 'range-b', {
+    success: false,
+    attempts: [{ upstream: 'range-a', status: 503 }, { upstream: 'range-b', status: 200 }]
+  });
+  stamped('req_range_third', '2026-10-03T18:00:00Z', 'range-b', { attempts: [{ upstream: 'range-b', status: 200 }] });
+  stamped('req_range_edge_start', '2026-10-02T00:00:00Z', 'range-a', { attempts: [{ upstream: 'range-a', status: 200 }] });
+  stamped('req_range_edge_end', '2026-10-02T23:59:59Z', 'range-b', { attempts: [{ upstream: 'range-b', status: 200 }] });
+
+  const singleDay = getRangeStats({ from: '2026-10-02T00:00:00Z', to: '2026-10-02T23:59:59Z' });
+  assert.equal(singleDay.matched, 3, '闭区间应包含起止边界');
+  assert.equal(singleDay.totals.requests, 3);
+  assert.equal(singleDay.totals.successful, 2);
+  assert.equal(singleDay.totals.failed, 1, '失败请求应计入');
+  assert.equal(singleDay.totals.failovers, 1, '跨上游切换才算故障转移');
+  assert.equal(singleDay.totals.promptTokens, 30);
+  assert.equal(singleDay.totals.totalTokens, 42);
+  const singleDayBuckets = singleDay.byUpstream;
+  assert.equal(singleDayBuckets['range-a'].requests, 2, '按上游统计与 totals 口径一致');
+  assert.equal(singleDayBuckets['range-a'].failed, 1);
+  assert.equal(singleDayBuckets['range-b'].requests, 2);
+  assert.equal(singleDayBuckets['range-b'].successful, 2);
+
+  const whole = getRangeStats({ from: '2026-10-01T00:00:00Z', to: '2026-10-04T00:00:00Z' });
+  assert.equal(whole.matched, 5);
+  assert.equal(whole.totals.requests, 5);
+  assert.equal(whole.byUpstream['range-a'].requests, 3);
+  assert.equal(whole.byUpstream['range-b'].requests, 3);
+
+  const empty = getRangeStats({ from: '2026-10-05T00:00:00Z', to: '2026-10-06T00:00:00Z' });
+  assert.equal(empty.matched, 0);
+  assert.deepEqual(empty.totals, { requests: 0, successful: 0, failed: 0, failovers: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+
+  assert.throws(() => getRangeStats({ from: 'not-a-date', to: '2026-10-06T00:00:00Z' }), /时间范围参数无效/);
+  assert.throws(() => getRangeStats({ from: '2026-10-06T00:00:00Z', to: '2026-10-05T00:00:00Z' }), /开始时间不能晚于结束时间/);
 
   clearMetrics();
   fs.rmSync(dataDir, { recursive: true, force: true });

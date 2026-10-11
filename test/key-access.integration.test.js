@@ -34,7 +34,7 @@ async function stopGateway() {
 }
 async function startGateway() {
   gateway = spawn(process.execPath, ['src/server.js'], { cwd: projectRoot,
-    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1', LOCAL_MODEL_GATEWAY_FORCE_PORT: String(port), LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory },
+    env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), SAKURA_AI_GATEWAY_FORCE_HOST: '127.0.0.1', SAKURA_AI_GATEWAY_FORCE_PORT: String(port), SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory },
     stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   gateway.stdout.on('data', (chunk) => { output += chunk; });

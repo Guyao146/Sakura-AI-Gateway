@@ -25,11 +25,11 @@
 
 1. 未认证的远程访问先进入网关本地登录页（`/auth/login`）；用户点击登录后才访问 Authentik（`/auth/oidc/login`）。登录页本身不依赖认证服务器在线。
 2. 使用 **Authorization Code + PKCE**，并携带 `state` 与 `nonce`（交易 Cookie
-   `lmg_oidc_state`，10 分钟有效）。
+   `sakura_ai_gateway_oidc_state`，10 分钟有效）。
 3. 回调 `/auth/oidc/callback` 校验：discovery、issuer、audience、过期时间（含 60s 时钟容差）、
    `state`/`nonce`/PKCE，以及通过 **JWKS 对 ID Token 做非对称签名校验**。
 4. 校验通过后创建随机 32 字节的会话 ID，写入 **HttpOnly** Cookie
-   （`lmg_admin_session`），有效期 = `min(claims.exp, now + SESSION_TTL)`。
+   （`sakura_ai_gateway_admin_session`），有效期 = `min(claims.exp, now + SESSION_TTL)`。
 5. 会话只存在服务端内存（`Map`），**服务重启后远程会话全部失效**，需重新登录。
 
 安全细节：
@@ -47,7 +47,7 @@
 格式 `scrypt$N$r$p$saltHex$hashHex`；管理接口永不返回哈希，配置导出包含哈希但从不包含明文。
 1. 未认证的远程访问先进入登录页 `/auth/login`；`remoteMode` 为 `password` 时显示账号密码表单，否则显示 Authentik 登录按钮。
 2. `POST /auth/password/login` 携带 `{username, password}`；用户名用 `timingSafeEqual` 常量时间比较，密码用 scrypt 重新派生后常量时间比对。
-3. 验证通过后创建与 OIDC 相同的随机 32 字节会话 ID，写入 **HttpOnly** Cookie（`lmg_admin_session`），
+3. 验证通过后创建与 OIDC 相同的随机 32 字节会话 ID，写入 **HttpOnly** Cookie（`sakura_ai_gateway_admin_session`），
    有效期 `AUTHENTIK_SESSION_TTL_SECONDS`（本地账号同样使用该项配置，默认 28800 秒）。
 4. 会话记录登录时的 `Host`（`originHost`）；后续管理请求必须来自同一 Host，且 `Origin`/`Sec-Fetch-Site` 通过同源检查。
 5. 会话只存在服务端内存，**服务重启后失效**。本地账号登出只清除本机会话，不跳转 Authentik。

@@ -10,14 +10,28 @@ const state = {
   logPage: null,
   loadingMoreLogs: false,
   metricsRefreshInFlight: false,
-  metricsRefreshTimer: null
+metricsRefreshTimer: null,
+// 时间范围统计：{ from, to, data }；为 null 时展示全部统计。
+metricsRange: null
 };
 state.activeTab = 'overview';
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
 const { normalizeKeyAccess, keyAccessModels } = window.KeyAccess;
-const PANEL_ORDER_KEY = 'local-model-gateway.panel-order.v1';
-const ACTIVE_TAB_KEY = 'local-model-gateway.active-tab.v2';
+const PANEL_ORDER_KEY = 'sakura-ai-gateway.panel-order.v1';
+const ACTIVE_TAB_KEY = 'sakura-ai-gateway.active-tab.v2';
+
+// 仅在新键尚不存在时复制旧版偏好；保留旧值，存储不可用也不阻止页面加载。
+function migrateBrowserPreferences() {
+  try {
+    for (const suffix of ['panel-order.v1', 'active-tab.v2', 'card-order.v1']) {
+      const key = `sakura-ai-gateway.${suffix}`;
+      const previous = localStorage.getItem(`local-model-gateway.${suffix}`);
+      if (localStorage.getItem(key) === null && previous !== null) localStorage.setItem(key, previous);
+    }
+  } catch { /* Browser preferences are optional. */ }
+}
+migrateBrowserPreferences();
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -47,7 +61,7 @@ async function api(path, options = {}) {
     if (response.status === 401 && body.error?.loginUrl) window.location.assign(body.error.loginUrl);
     const requestId = response.headers.get('x-request-id');
     const error = new Error(body.error?.message || `请求失败（${response.status}）`);
-    console.error('[Local Model Gateway] 请求失败', { requestId, status: response.status, response: body });
+    console.error('[Sakura-AI-Gateway] 请求失败', { requestId, status: response.status, response: body });
     error.requestId = requestId;
     throw error;
   }
@@ -207,7 +221,7 @@ async function checkForUpdates() {
   } finally { button.disabled = false; button.textContent = '检查更新'; }
 }
 
-const CARD_ORDER_KEY = 'local-model-gateway.card-order.v1';
+const CARD_ORDER_KEY = 'sakura-ai-gateway.card-order.v1';
 
 function cardOrder(type) {
   try {
@@ -606,37 +620,44 @@ async function exportUsage(scope) {
   try {
     const data = await api(`/api/admin/metrics/export?scope=${scope}`);
     const label = scope === 'all' ? 'all' : 'recent-100';
-    downloadJson(`local-model-gateway-usage-${label}-${new Date().toISOString().slice(0, 10)}.json`, data);
+    downloadJson(`Sakura-AI-Gateway-usage-${label}-${new Date().toISOString().slice(0, 10)}.json`, data);
     toast(scope === 'all' ? `已导出全部 ${data.records.length} 条用量记录` : `已导出最近 ${data.records.length} 条历史记录`);
   } catch (error) { toast(error.message, 'error'); }
 }
 
 function renderMetrics(options = {}) {
-  const metrics = state.metrics;
-  if (!metrics) {
+  const range = state.metricsRange;
+  // 渲染数据源：范围模式下用范围结果，否则用全量统计。
+  const source = range ? range.data : state.metrics;
+  if (!source) {
     $('#statsGrid').innerHTML = '<div class="empty">统计暂时不可用。</div>';
-    $('#upstreamStats').innerHTML = '';
-    $('#requestLogBody').innerHTML = '';
-    $('#metricsEmpty').classList.remove('hidden');
     $('#requestLogMore')?.classList.add('hidden');
-    if ($('#requestLogSummary')) $('#requestLogSummary').textContent = '仅记录元数据';
     return;
   }
-  const totals = metrics.totals || {};
+  const totals = source.totals || {};
   const successRate = totals.requests ? `${((totals.successful / totals.requests) * 100).toFixed(1)}%` : '0%';
+  // 每个统计独占一行，数字再长也不会互相挤压或被裁掉。
   $('#statsGrid').innerHTML = [
     ['请求总数', formatNumber(totals.requests)],
     ['成功率', successRate],
     ['故障转移', formatNumber(totals.failovers)],
     ['总 Token', formatNumber(totals.totalTokens)],
-    ['输入 / 输出', `${formatNumber(totals.promptTokens)} / ${formatNumber(totals.completionTokens)}`]
+    ['输入 Token', formatNumber(totals.promptTokens)],
+    ['输出 Token', formatNumber(totals.completionTokens)]
   ].map(([label, value]) => `<div class="stat-card"><div class="stat-value">${escapeHtml(value)}</div><div class="stat-label">${escapeHtml(label)}</div></div>`).join('');
 
-  const upstreamEntries = Object.entries(metrics.byUpstream || {});
-  $('#upstreamStats').innerHTML = upstreamEntries.length ? upstreamEntries.map(([name, item]) => `<div class="upstream-stat"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span>请求 ${formatNumber(item.requests)} · 成功 ${formatNumber(item.successful)} · 失败 ${formatNumber(item.failed)}<br>Token ${formatNumber(item.totalTokens)}</span></div>`).join('') : '<div class="empty">还没有上游请求统计。</div>';
+  const scopeTitle = $('#metricsScopeTitle');
+  if (scopeTitle) {
+    scopeTitle.textContent = range
+      ? `按上游统计（${range.from.replace('T', ' ')} ~ ${range.to.replace('T', ' ')}，命中 ${formatNumber(source.matched ?? 0)} 条）`
+      : '按上游统计（全部）';
+  }
+  const upstreamEntries = Object.entries(source.byUpstream || {});
+  $('#upstreamStats').innerHTML = upstreamEntries.length ? upstreamEntries.map(([name, item]) => `<div class="upstream-stat"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><span>请求 ${formatNumber(item.requests)} · 成功 ${formatNumber(item.successful)} · 失败 ${formatNumber(item.failed)}<br>Token ${formatNumber(item.totalTokens)}</span></div>`).join('') : `<div class="empty">${range ? '该时间范围内没有请求记录。' : '还没有上游请求统计。'}</div>`;
 
-  const logs = metrics.logs || [];
-  state.logPage = metrics.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
+  // 范围统计只替换统计卡片，请求日志仍跟随全量快照。
+  const logs = state.metrics?.logs || [];
+  state.logPage = state.metrics?.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
   if (!options.preserveLogs) {
     $('#metricsEmpty').classList.toggle('hidden', logs.length > 0);
     $('#requestLogBody').innerHTML = logs.map(renderLogRow).join('');
@@ -648,14 +669,57 @@ async function refreshMetrics() {
   if (!state.config || state.metricsRefreshInFlight) return;
   state.metricsRefreshInFlight = true;
   try {
-    const metrics = await api('/api/admin/metrics');
-    state.metrics = metrics;
+    if (state.metricsRange) {
+      // 范围模式下刷新的是同一时间窗口，新请求会计入当前视图。
+      state.metricsRange = await loadMetricsRange(state.metricsRange.from, state.metricsRange.to);
+    } else {
+      state.metrics = await api('/api/admin/metrics');
+    }
     renderMetrics({ preserveLogs: true });
   } catch {
     // Keep the last successful snapshot visible during a temporary failure.
   } finally {
     state.metricsRefreshInFlight = false;
   }
+}
+
+// datetime-local 是本地时间，转成 ISO 后由后端按闭区间解析。
+function formatRangeInput(value) { return value ? new Date(value).toISOString() : ''; }
+
+async function loadMetricsRange(from, to) {
+  const data = await api(`/api/admin/metrics/range?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  return { from, to, data };
+}
+
+function fillDefaultRangeInputs() {
+  const from = $('#metricsRangeFrom');
+  const to = $('#metricsRangeTo');
+  if (!from || !to || from.value || to.value) return;
+  const pad = (value) => String(value).padStart(2, '0');
+  const format = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const now = new Date();
+  from.value = format(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0));
+  to.value = format(now);
+}
+
+async function applyMetricsRange() {
+  const fromInput = $('#metricsRangeFrom')?.value || '';
+  const toInput = $('#metricsRangeTo')?.value || '';
+  if (!fromInput || !toInput) { toast('请先选择开始和结束时间'); return; }
+  const from = formatRangeInput(fromInput);
+  const to = formatRangeInput(toInput);
+  if (new Date(from) > new Date(to)) { toast('开始时间不能晚于结束时间'); return; }
+  try {
+    state.metricsRange = await loadMetricsRange(from, to);
+    renderMetrics({ preserveLogs: true });
+    toast(`已统计 ${state.metricsRange.data.matched} 条时间范围内的请求`);
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function resetMetricsRange() {
+  state.metricsRange = null;
+  renderMetrics({ preserveLogs: true });
+  toast('已返回全部时间段的请求统计');
 }
 
 const STRATEGY_LABELS = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' };
@@ -797,6 +861,7 @@ async function loadConfig() {
     }
     $('#dashboard').classList.remove('hidden');
     setMessage('');
+    fillDefaultRangeInputs();
     render();
     switchTab(state.activeTab || 'overview');
   } catch (error) {
@@ -1281,6 +1346,8 @@ async function clearMetrics() {
   if (!window.confirm('确定清空所有请求统计和最近日志吗？此操作不可撤销。')) return;
   try {
     state.metrics = await api('/api/admin/metrics', { method: 'DELETE' });
+    state.metricsRange = null;
+    fillDefaultRangeInputs();
     renderMetrics();
     toast('请求统计已清空');
   } catch (error) { toast(error.message, 'error'); }
@@ -1434,7 +1501,7 @@ async function handleAdminUserClick(event) {
 async function exportConfig() {
   try {
     const backup = await api('/api/admin/config/export');
-    downloadJson(`local-model-gateway-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
+    downloadJson(`Sakura-AI-Gateway-backup-${new Date().toISOString().slice(0, 10)}.json`, backup);
     toast('配置已导出，请妥善保存备份文件');
   } catch (error) { toast(error.message, 'error'); }
 }
@@ -1499,6 +1566,8 @@ $('#upstreamList').addEventListener('click', handleListClick);
 $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
+$('#applyMetricsRangeButton').addEventListener('click', applyMetricsRange);
+$('#resetMetricsRangeButton').addEventListener('click', resetMetricsRange);
 $('#refreshLogsButton').addEventListener('click', refreshRequestLogs);
 $('#requestLogBody').addEventListener('click', (event) => {
   const row = event.target.closest('.log-row-expandable');

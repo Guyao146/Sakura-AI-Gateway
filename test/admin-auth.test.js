@@ -84,7 +84,7 @@ await assert.rejects(() => makeAuth({ remoteMode: 'oidc', users }).loginWithPass
 // 正确凭据建立会话
 const login = await passwordMode.loginWithPassword(remoteReq, { username: 'alice', password });
 assert.equal(login.user.username, 'alice');
-assert.match(login.cookie, /lmg_admin_session=/);
+assert.match(login.cookie, /sakura_ai_gateway_admin_session=/);
 assert.match(login.cookie, /HttpOnly/);
 const sessionCookie = login.cookie.split(';')[0].split('=').slice(1).join('=');
 assert.ok(passwordMode.sessions.has(sessionCookie));
@@ -94,7 +94,7 @@ await assert.rejects(() => passwordMode.loginWithPassword(remoteReq, { username:
 await assert.rejects(() => passwordMode.loginWithPassword(remoteReq, { username: 'bob', password: 'disabled-pass' }), /用户名或密码错误/);
 
 // 同源绑定：authenticate 返回的会话带 originHost
-const access = passwordMode.authenticate(request('203.0.113.42', { host: 'gateway.example.test', cookie: `lmg_admin_session=${sessionCookie}` }));
+const access = passwordMode.authenticate(request('203.0.113.42', { host: 'gateway.example.test', cookie: `sakura_ai_gateway_admin_session=${sessionCookie}` }));
 assert.equal(access.ok, true);
 assert.equal(access.mode, 'password');
 assert.equal(access.user.username, 'alice');
@@ -110,7 +110,7 @@ assert.equal(loopbackAnonymous.ok, false, '开启后回环匿名访问不再放�
 assert.equal(loopbackAnonymous.localLoginRequired, true);
 const localLogin = await requireLocal.loginWithPassword(request('127.0.0.1', { host: '127.0.0.1:8787' }), { username: 'alice', password });
 const localCookie = localLogin.cookie.split(';')[0].split('=').slice(1).join('=');
-const localAccess = requireLocal.authenticate(request('127.0.0.1', { host: '127.0.0.1:8787', cookie: `lmg_admin_session=${localCookie}` }));
+const localAccess = requireLocal.authenticate(request('127.0.0.1', { host: '127.0.0.1:8787', cookie: `sakura_ai_gateway_admin_session=${localCookie}` }));
 assert.equal(localAccess.ok, true, '回环携带有效会话应当放行');
 assert.equal(localAccess.mode, 'password');
 

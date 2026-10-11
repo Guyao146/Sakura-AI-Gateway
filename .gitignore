@@ -19,4 +19,4 @@ client/
 desktop-client/bin/
 desktop-client/obj/
 desktop-client/*.csproj.user
-LocalModelGateway-client-win64.zip
+/*-client-win64.zip

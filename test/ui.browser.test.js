@@ -28,7 +28,7 @@ async function main() {
     const base = `http://127.0.0.1:${port}`;
     gateway = spawn(process.execPath, [path.join(root, 'src', 'server.js')], {
       cwd: root,
-      env: { ...process.env, LOCAL_MODEL_GATEWAY_DATA_DIR: path.join(temporary, 'data'), LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1', LOCAL_MODEL_GATEWAY_FORCE_PORT: String(port), ADMIN_REMOTE_MODE: 'oidc' },
+      env: { ...process.env, SAKURA_AI_GATEWAY_DATA_DIR: path.join(temporary, 'data'), SAKURA_AI_GATEWAY_FORCE_HOST: '127.0.0.1', SAKURA_AI_GATEWAY_FORCE_PORT: String(port), ADMIN_REMOTE_MODE: 'oidc' },
       stdio: 'ignore'
     });
     let ready = false;
@@ -120,13 +120,22 @@ async function main() {
     assert.equal(await evaluate('document.querySelector("#aboutVersion").textContent.replace(/^v/, "")'), packageVersion);
     assert.equal(await evaluate('document.querySelectorAll("#aboutVersion").length'), 1);
     const aboutLinks = await evaluate('[...document.querySelectorAll(".about-panel a")].map(link => ({href:link.href, target:link.target, rel:link.rel}))');
-    const repository = 'https://github.com/Guyao146/Local-Model-Gateway';
-    for (const href of [repository, `${repository}/issues`, `${repository}/blob/main/LICENSE`, `${repository}/blob/main/LICENSING.md`, 'https://wiki.mcylyr.cn/#/docs/local-model-gateway', 'https://github.com/markedjs/marked']) {
+    const repository = 'https://github.com/Guyao146/Sakura-AI-Gateway';
+    for (const href of [repository, `${repository}/issues`, `${repository}/blob/main/LICENSE`, `${repository}/blob/main/LICENSING.md`, `${repository}/blob/main/wiki/index.md`, 'https://github.com/markedjs/marked']) {
       assert(aboutLinks.some(link => link.href === href), `关于页应保留资源入口: ${href}`);
     }
     assert(aboutLinks.every(link => link.href.startsWith('https://') && link.target === '_blank' && link.rel.split(/\s+/).includes('noopener') && link.rel.split(/\s+/).includes('noreferrer')), '外链应安全地在新标签页打开');
     const licenseText = await evaluate('document.querySelector(".about-license").textContent');
     assert.match(licenseText, /Sakura-License v1\.2/);
+    assert.equal(await evaluate('document.querySelector(".about-kicker").textContent'), 'Sakura-AI-Gateway');
+    assert.equal(await evaluate('document.querySelector(".sidebar-version .muted").textContent'), 'Sakura-AI-Gateway');
+    // 偏好存储使用新项目名，并能正常读写（旧键不得再被写入）。
+    await evaluate('switchTab("settings")');
+    assert.equal(await evaluate(`localStorage.getItem("sakura-ai-gateway.active-tab.v2")`), 'settings', '标签偏好应写入新键');
+    for (const key of ['local-model-gateway.panel-order.v1', 'local-model-gateway.active-tab.v2', 'local-model-gateway.card-order.v1']) {
+      assert.equal(await evaluate(`localStorage.getItem(${JSON.stringify(key)}) === null`), true, `不应再写入旧键：${key}`);
+    }
+    await evaluate('switchTab("about")');
     assert.match(licenseText, /不是 OSI 批准的开源许可证/);
     assert.match(licenseText, /v2\.4\.0 及之前.*LGPL-2\.1/);
     const credits = await evaluate('document.querySelector("[aria-labelledby=aboutCreditsHeading]").textContent');

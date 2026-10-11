@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process');
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function downloadFile(url, target) {
-  const response = await fetch(url, { headers: { Accept: 'application/octet-stream', 'User-Agent': 'Local-Model-Gateway-Updater' } });
+  const response = await fetch(url, { headers: { Accept: 'application/octet-stream', 'User-Agent': 'Sakura-AI-Gateway-Updater' } });
   if (!response.ok) throw new Error(`下载升级包失败：HTTP ${response.status}`);
   const buffer = Buffer.from(await response.arrayBuffer());
   await fsp.writeFile(target, buffer, { mode: 0o600 });

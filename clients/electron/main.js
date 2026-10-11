@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
+const { prepareUserData } = require('./data-directory');
 
 let gatewayPort = 0;
 let gatewayProcess;
@@ -95,10 +96,10 @@ async function startGateway() {
       ELECTRON_RUN_AS_NODE: '1',
       HOST: '127.0.0.1',
       PORT: String(gatewayPort),
-      LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1',
-      LOCAL_MODEL_GATEWAY_FORCE_PORT: String(gatewayPort),
-      LOCAL_MODEL_GATEWAY_FORCE_SETTINGS: 'true',
-      LOCAL_MODEL_GATEWAY_DATA_DIR: dataDir
+      SAKURA_AI_GATEWAY_FORCE_HOST: '127.0.0.1',
+      SAKURA_AI_GATEWAY_FORCE_PORT: String(gatewayPort),
+      SAKURA_AI_GATEWAY_FORCE_SETTINGS: 'true',
+      SAKURA_AI_GATEWAY_DATA_DIR: dataDir
     },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true
@@ -107,11 +108,11 @@ async function startGateway() {
     logStream?.write(`[client] 无法启动本地网关子进程：${error.stack || error.message}\n`);
   });
   gatewayProcess.on('exit', (code) => {
-    if (code !== 0) logStream?.write(`[client] Local Model Gateway 子进程退出，代码：${code}\n`);
+    if (code !== 0) logStream?.write(`[client] Sakura-AI-Gateway 子进程退出，代码：${code}\n`);
   });
   gatewayProcess.on('close', (code, signal) => {
     if (!restartingGateway && !mainWindow?.isDestroyed() && code !== 0) {
-      mainWindow.loadURL(statusHtml('Local Model Gateway 启动失败', `网关子进程已退出（代码 ${code ?? '未知'}，信号 ${signal || '无'}）。\n\n诊断日志：${path.join(app.getPath('userData'), 'gateway.log')}`)).catch(() => {});
+      mainWindow.loadURL(statusHtml('Sakura-AI-Gateway 启动失败', `网关子进程已退出（代码 ${code ?? '未知'}，信号 ${signal || '无'}）。\n\n诊断日志：${path.join(app.getPath('userData'), 'gateway.log')}`)).catch(() => {});
     }
   });
   gatewayProcess.stdout?.pipe(logStream, { end: false });
@@ -158,7 +159,7 @@ async function createWindow() {
     height: 860,
     minWidth: 880,
     minHeight: 620,
-    title: 'Local Model Gateway · Electron',
+    title: 'Sakura-AI-Gateway · Electron',
     autoHideMenuBar: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
@@ -177,19 +178,24 @@ async function createWindow() {
     },
     { label: '设置', submenu: [{ label: '端口设置…', click: openPortSettings }] },
     { label: '帮助', submenu: [{ label: '打开日志目录', click: () => require('node:child_process').execFile('explorer.exe', [app.getPath('userData')]) }] }]));
-  await mainWindow.loadURL(statusHtml('正在启动本地模型网关', '正在准备内嵌 Node.js 服务，请稍候…'));
+  await mainWindow.loadURL(statusHtml('正在启动 Sakura-AI-Gateway', '正在准备内嵌 Node.js 服务，请稍候…'));
   try {
     await startGateway();
     await waitForGateway(gatewayPort);
     await mainWindow.loadURL(`http://127.0.0.1:${gatewayPort}/`);
   } catch (error) {
     const logPath = path.join(app.getPath('userData'), 'gateway.log');
-    await mainWindow.loadURL(statusHtml('Local Model Gateway 启动失败', `${error.stack || error.message}\n\n诊断日志：${logPath}`));
+    await mainWindow.loadURL(statusHtml('Sakura-AI-Gateway 启动失败', `${error.stack || error.message}\n\n诊断日志：${logPath}`));
   }
 }
 
-app.whenReady().then(createWindow).catch((error) => {
-  dialog.showErrorBox('Local Model Gateway 启动失败', error.stack || error.message);
+app.whenReady().then(() => {
+  app.setName('Sakura-AI-Gateway Electron');
+  app.setAppUserModelId('cn.mcylyr.sakuraaigateway.electron');
+  app.setPath('userData', prepareUserData(app.getPath('appData')));
+  return createWindow();
+}).catch((error) => {
+  dialog.showErrorBox('Sakura-AI-Gateway 启动失败', error.stack || error.message);
   app.quit();
 });
 app.on('window-all-closed', () => app.quit());

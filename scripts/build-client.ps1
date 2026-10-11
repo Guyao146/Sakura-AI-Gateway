@@ -13,7 +13,7 @@ if (Test-Path -LiteralPath $output) {
     Remove-Item -LiteralPath $output -Recurse -Force
 }
 
-dotnet publish (Join-Path $root 'desktop-client') `
+dotnet publish (Join-Path $root 'desktop-client\Sakura-AI-Gateway.Client.csproj') `
     -c Release `
     -o $output
 if ($LASTEXITCODE -ne 0) {
@@ -34,7 +34,7 @@ foreach ($architecture in @('win-x86', 'win-arm64')) {
     }
 }
 
-$archive = Join-Path $root 'LocalModelGateway-client-win64.zip'
+$archive = Join-Path $root 'Sakura-AI-Gateway-client-win64.zip'
 if (Test-Path -LiteralPath $archive) {
     Remove-Item -LiteralPath $archive -Force
 }

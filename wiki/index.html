@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Local Model Gateway · Wiki</title>
+<title>Sakura-AI-Gateway · Wiki</title>
 <script src="assets/marked.min.js"></script>
 <style>
 :root{--accent:#2b6cb0;--bg:#f6f7f9;--fg:#1f2430;--border:#dde2ea;--code-bg:#eef1f5}
@@ -34,13 +34,13 @@ img{max-width:100%}
 </style>
 </head>
 <body>
-<header><h1>📚 Local Model Gateway · Wiki</h1><span class="crumb" id="crumb"></span></header>
+<header><h1>📚 Sakura-AI-Gateway · Wiki</h1><span class="crumb" id="crumb"></span></header>
 <div class="layout">
 <nav id="sidebar"></nav>
 <main id="content"><p class="hint">正在加载…</p></main>
 </div>
 <script>
-const PAGES=[['index.md','首页'],['architecture.md','架构与模块'],['api.md','接口参考'],['routing.md','模型路由与轮询'],['metrics.md','指标与请求日志'],['security.md','认证与安全'],['deployment.md','部署与配置'],['development.md','开发与测试']];
+const PAGES=[['index.md','首页'],['architecture.md','架构与模块'],['api.md','接口参考'],['routing.md','模型路由与轮询'],['metrics.md','指标与请求日志'],['security.md','认证与安全'],['deployment.md','部署与配置'],['migration.md','名称与数据迁移'],['development.md','开发与测试']];
 const sidebar=document.getElementById('sidebar'),content=document.getElementById('content'),crumb=document.getElementById('crumb');
 function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function scrollTopAll(){
@@ -66,7 +66,7 @@ async function load(file){
     const md=await res.text();
     content.innerHTML=marked.parse(md);
     const title=md.match(/^#\s+(.+)$/m);
-    document.title=(title?title[1].trim()+' · ':'')+'Local Model Gateway · Wiki';
+    document.title=(title?title[1].trim()+' · ':'')+'Sakura-AI-Gateway · Wiki';
     const name=PAGES.find(p=>p[0]===file);crumb.textContent=name?name[1]:file;
     bindLinks();
     scrollTopAll();   // 关键：每次切页强制滚回顶部

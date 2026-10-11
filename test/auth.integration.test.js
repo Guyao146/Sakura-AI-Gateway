@@ -7,9 +7,9 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-auth-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-auth-'));
 const gatewayPort = 24000 + Math.floor(Math.random() * 1000);
-const clientId = 'local-model-gateway-test';
+const clientId = 'sakura-ai-gateway-test';
 const clientSecret = 'test-client-secret';
 const remoteHeaders = { Host: 'gateway.example.test', 'X-Forwarded-For': '203.0.113.42' };
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -137,7 +137,7 @@ async function main() {
       ...process.env,
       PORT: String(gatewayPort),
       HOST: '127.0.0.1',
-      LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory,
+      SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory,
       AUTHENTIK_ISSUER_URL: issuer,
       AUTHENTIK_CLIENT_ID: clientId,
       AUTHENTIK_CLIENT_SECRET: clientSecret,
@@ -199,7 +199,7 @@ async function main() {
     expectedNonce = authorizationUrl.searchParams.get('nonce');
     expectedChallenge = authorizationUrl.searchParams.get('code_challenge');
     const state = authorizationUrl.searchParams.get('state');
-    const transactionCookie = cookiePair(login.headers['set-cookie'], 'lmg_oidc_state');
+    const transactionCookie = cookiePair(login.headers['set-cookie'], 'sakura_ai_gateway_oidc_state');
     assert.ok(state && expectedNonce && expectedChallenge && transactionCookie);
 
     const badCallback = await request(`${baseUrl}/auth/oidc/callback?code=valid-code&state=wrong-state`, {
@@ -214,7 +214,7 @@ async function main() {
     assert.equal(callback.status, 302, `${callback.raw}\n${stderr}`);
     assert.equal(callback.headers.location, '/');
     assert.equal(tokenRequests, 1);
-    const sessionCookie = cookiePair(callback.headers['set-cookie'], 'lmg_admin_session');
+    const sessionCookie = cookiePair(callback.headers['set-cookie'], 'sakura_ai_gateway_admin_session');
     assert.ok(sessionCookie, '回调应建立 HttpOnly 管理会话');
     assert.match((Array.isArray(callback.headers['set-cookie']) ? callback.headers['set-cookie'] : []).join('\n'), /HttpOnly/);
 

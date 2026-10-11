@@ -5,7 +5,7 @@
 需要 Node.js ≥ 18（服务使用内置 `fetch`）。
 
 ```powershell
-cd local-model-gateway
+cd Sakura-AI-Gateway
 node src/server.js
 # 或 npm.cmd start；开发热重载可用 npm.cmd dev（node --watch）
 ```
@@ -15,20 +15,20 @@ node src/server.js
 
 ## Docker Compose 一键部署
 
-服务器推荐使用项目自带的 Docker Compose 方案。镜像已经发布到 GHCR，无需下载源码或
-在服务器构建。要求服务器已安装 Docker Engine 和 Docker Compose Plugin。在任意空目录
+服务器推荐使用项目自带的 Docker Compose 方案。正式发布时，镜像由 CI 推送到 GHCR，
+使用对应已发布标签即可，无需在服务器构建。要求已安装 Docker Engine 和 Docker Compose Plugin。在任意空目录
 新建 `docker-compose.yml`：
 
 ```yaml
 services:
   gateway:
-    image: ghcr.io/guyao146/local-model-gateway:latest
+    image: ghcr.io/guyao146/sakura-ai-gateway:latest
     restart: unless-stopped
     init: true
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      LOCAL_MODEL_GATEWAY_DATA_DIR: /app/data
+      SAKURA_AI_GATEWAY_DATA_DIR: /app/data
     ports:
       - "8787:8787"
     volumes:
@@ -36,9 +36,10 @@ services:
 
 volumes:
   gateway-data:
+    name: ${SAKURA_AI_GATEWAY_VOLUME:-sakura-ai-gateway-data}
 ```
 
-然后直接拉取并启动：
+已有部署请先按[迁移说明](migration.md)设置 `SAKURA_AI_GATEWAY_VOLUME` 为原卷名。新部署直接拉取并启动：
 
 ```bash
 docker compose pull
@@ -47,8 +48,8 @@ docker compose ps
 ```
 
 仓库中的完整版 `docker-compose.yml` 支持 `.env` 中的 `GATEWAY_PORT`、镜像标签和
-Authentik 参数。固定版本可将镜像标签改为 `v1.2.3` 等具体 Release 标签；`latest` 跟随
-最新正式 Release。网关配置和密钥保存在 Docker 命名卷 `gateway-data`，重新创建容器
+Authentik 参数。固定版本使用新镜像仓库中实际发布的 Release 标签；`latest` 跟随
+最新正式 Release。网关配置和密钥保存在 Docker 命名卷（默认 `sakura-ai-gateway-data`），重新创建容器
 不会丢失。常用运维命令：
 
 ```bash
@@ -57,7 +58,7 @@ docker compose logs -f gateway
 docker compose restart gateway
 docker compose down
 docker compose pull && docker compose up -d  # 更新镜像
-docker run --rm -v gateway-data:/data -v "$PWD":/backup alpine tar czf /backup/gateway-data-backup.tgz -C /data .
+docker run --rm -v "${SAKURA_AI_GATEWAY_VOLUME:-sakura-ai-gateway-data}:/data:ro" -v "$PWD":/backup alpine tar czf /backup/Sakura-AI-Gateway-data-backup.tgz -C /data .
 ```
 
 公网部署不要直接把管理后台裸露在互联网上：应使用 HTTPS 反向代理，并配置完整的
@@ -77,8 +78,12 @@ Authentik OIDC（`AUTHENTIK_REDIRECT_URI` 必须是公网 HTTPS 地址加
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | 监听地址；`0.0.0.0` 暴露到局域网 |
 | `PORT` | `8787` | 监听端口（1–65535） |
-| `LOCAL_MODEL_GATEWAY_DATA_DIR` | 项目下 `data` | 配置/指标数据目录 |
-| `LOCAL_MODEL_GATEWAY_MAX_LOGS` | `5000` | JSONL 请求日志保留条数，最小 100 |
+| `SAKURA_AI_GATEWAY_DATA_DIR` | 项目下 `data` | 配置/指标数据目录 |
+| `SAKURA_AI_GATEWAY_MAX_LOGS` | `5000` | JSONL 请求日志保留条数，最小 100 |
+| `SAKURA_AI_GATEWAY_FORCE_HOST` | — | 强制覆盖配置文件中的监听地址（桌面客户端使用） |
+| `SAKURA_AI_GATEWAY_FORCE_PORT` | — | 强制覆盖配置文件中的端口（桌面客户端使用） |
+| `SAKURA_AI_GATEWAY_FORCE_SETTINGS` | `false` | 以 `HOST` / `PORT` 覆盖配置文件 |
+| `SAKURA_AI_GATEWAY_VOLUME` | `sakura-ai-gateway-data` | Compose 数据卷实际名称；升级时指定原卷 |
 | `AUTHENTIK_ISSUER_URL` | — | Authentik Application 的 OIDC issuer（**不要**带 `/.well-known/...`） |
 | `AUTHENTIK_CLIENT_ID` | — | OAuth2/OpenID Provider 的 Client ID |
 | `AUTHENTIK_CLIENT_SECRET` | — | Client Secret（仅环境变量） |
@@ -128,7 +133,7 @@ Authentik 配置要点（详见 README）：
 ```powershell
 $env:TRUSTED_PROXY_ADDRESSES = "127.0.0.1"   # 反代与网关同机时
 $env:HOST = "0.0.0.0"
-$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/local-model-gateway"
+$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/sakura-ai-gateway"
 $env:AUTHENTIK_CLIENT_ID = "..."
 $env:AUTHENTIK_CLIENT_SECRET = "..."
 $env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
@@ -137,12 +142,14 @@ node src/server.js
 
 ## 配置备份与迁移
 
+项目改名、旧环境变量、桌面数据和 Docker 卷迁移见[名称与数据迁移](migration.md)。
+
 ## 自动升级
 
 项目的 `.github/workflows/release.yml` 会在推送匹配 `vX.Y.Z` 的 tag 时创建源码升级包：
 
 ```text
-local-model-gateway-vX.Y.Z.tar.gz
+Sakura-AI-Gateway-vX.Y.Z.tar.gz
 ```
 
 后台“版本与升级”会从固定 GitHub 仓库读取正式 Release。只有找到匹配版本、HTTPS 下载地址和
@@ -154,9 +161,9 @@ Node 进程或删除 `.backup-*` 临时目录。
 同一个 Release 还会包含 Windows 客户端：`WebView2-win-x64.zip`、`Electron-win-x64-Setup.exe`
 和 `Electron-win-x64-Portable.exe`。前者使用 .NET 8 + Edge WebView2，后两者使用 Electron；
 两种客户端都把网关 `data/` 放在用户目录中。
-客户端启动时会自动选择空闲回环端口，并通过 `LOCAL_MODEL_GATEWAY_FORCE_HOST`、
-`LOCAL_MODEL_GATEWAY_FORCE_PORT` 覆盖旧配置中的监听地址和端口；同时保留
-`LOCAL_MODEL_GATEWAY_FORCE_SETTINGS=true` 兼容旧版客户端，避免迁移旧配置后出现启动成功但界面白屏。
+客户端启动时会自动选择空闲回环端口，并通过 `SAKURA_AI_GATEWAY_FORCE_HOST`、
+`SAKURA_AI_GATEWAY_FORCE_PORT` 覆盖旧配置中的监听地址和端口，同时设置
+`SAKURA_AI_GATEWAY_FORCE_SETTINGS=true`，避免迁移旧配置后出现启动成功但界面白屏。
 - 后台可导出完整配置（`/api/admin/config/export`）与导入
   （`/api/admin/config/import`，`preserveCredentials` 控制凭据保留）。
 - 导入会做模型选择与托管路由的一致性校验；旧版重复的同名选择自动合并（见

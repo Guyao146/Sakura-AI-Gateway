@@ -3,7 +3,7 @@
 ## 目录结构
 
 ```
-local-model-gateway/
+Sakura-AI-Gateway/
 ├── src/
 │   ├── server.js            # 入口与主逻辑（HTTP 服务、鉴权、路由、转发、管理接口）
 │   ├── config.js            # 配置读写（原子写、密钥掩码、默认值）

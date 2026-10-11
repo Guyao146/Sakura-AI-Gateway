@@ -33,7 +33,7 @@ const {
 } = require('./protocol');
 const { normalizeKeyAccess, modelRoute, keyAccessModels, isKeyModelAllowed } = require('../public/key-access');
 const { modalityMetadata, supportsInput, partModality, mapInputParts, inputMediaParts, assertMediaPreserved, normalizeTranslator } = require('./modalities');
-const { recordRequest, getMetrics, getLogs, getAllLogs, importUsageRecords, clearMetrics } = require('./metrics');
+const { recordRequest, getMetrics, getLogs, getAllLogs, getRangeStats, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { inspectStreamStart } = require('./stream-start');
 const { createResponsesStream, createAnthropicStream } = require('./stream-conversion');
@@ -45,6 +45,14 @@ const { userFromBody, userSummary } = require('./admin-users');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
 const { checkLatestRelease, isTrustedDownloadUrl } = require('./update-checker');
+const {
+  hashToken,
+  generateToken,
+  normalizeIntegration,
+  integrationPublic,
+  integrationErrorBody,
+  buildVerifyResponse
+} = require('./integration');
 const {
   errorMessage,
   isErrorPayload,
@@ -799,7 +807,9 @@ function publicModelCatalog() {
       protocol: upstream.protocol,
       enabled: upstream.enabled !== false,
       modelsSyncedAt: upstream.modelsSyncedAt || null,
-      models: catalogForUpstream(upstream).map((model) => ({
+      // 已停用的中转不再在模型目录里展示模型：本地模型选择面板只看得到启用来源，
+      // 重新启用后模型会自动回来（停用是临时的，已保存的模型选择不会删除）。
+      models: upstream.enabled === false ? [] : catalogForUpstream(upstream).map((model) => ({
         ...model,
         selection: selections.find((item) => item.enabled !== false && (item.upstreamIds || [item.upstreamId]).includes(upstream.id) && sameModelId(item.upstreamModel, model.id)) || null
       }))
@@ -879,6 +889,59 @@ function saveModelSelections(rawSelections) {
   resetRoutingState();
   saveConfig(config);
   return publicModelCatalog();
+}
+
+// 删除中转后清理引用它的模型选择（本地模型）：每条选择的来源站池里剔除被删站，
+// 一个来源站都不剩的本地模型整条删除；多站共享的模型保留并把托管路由重建到剩余站点，
+// 只剩一站时降级为固定站，保证本地模型仍然可用且配置不再悬挂引用已删除的中转。
+function pruneModelSelectionsForUpstream(upstreamId) {
+  const survivingSelections = [];
+  const survivingRouteIds = new Set();
+  for (const selection of config.modelSelections || []) {
+    const previousIds = Array.isArray(selection.upstreamIds) && selection.upstreamIds.length
+      ? selection.upstreamIds
+      : [selection.upstreamId];
+    const pool = previousIds.filter((id) => id && id !== upstreamId && config.upstreams.some((item) => item.id === id));
+    if (!pool.length) continue; // 该本地模型的来源站全部随中转删除
+    const mode = selection.upstreamMode === 'auto' && pool.length >= 2 ? 'auto' : 'fixed';
+    if (pool.length === previousIds.length && pool[0] === previousIds[0] && mode === selection.upstreamMode) {
+      survivingSelections.push(selection); // 该选择从未引用被删中转，原样保留
+      survivingRouteIds.add(selection.managedRouteId);
+      continue;
+    }
+    const rebuilt = {
+      ...selection,
+      upstreamId: pool[0],
+      upstreamIds: mode === 'auto' ? pool : [pool[0]],
+      upstreamMode: mode,
+      updatedAt: nowIso()
+    };
+    const oldRoute = config.routes.find((item) => item.id === selection.managedRouteId);
+    const route = buildRoute({
+      id: oldRoute?.id,
+      localModel: rebuilt.localModel,
+      upstreamId: rebuilt.upstreamId,
+      upstreamModel: rebuilt.upstreamModel,
+      thinkingLevel: rebuilt.thinkingLevel,
+      modalityTranslator: rebuilt.modalityTranslator,
+      responsesMode: rebuilt.responsesMode,
+      strategy: mode === 'auto' ? 'round_robin' : 'failover',
+      fallbackUpstreamIds: mode === 'auto' ? pool.slice(1) : [],
+      upstreamWeights: Object.fromEntries(pool.map((id) => [id, 1])),
+      enabled: rebuilt.enabled !== false,
+      managedBy: 'model-selector',
+      selectionId: rebuilt.id
+    }, oldRoute || {}, config.upstreams, config.routes);
+    rebuilt.managedRouteId = route.id;
+    const routeIndex = config.routes.findIndex((item) => item.id === route.id);
+    if (routeIndex >= 0) config.routes[routeIndex] = route;
+    else config.routes.push(route);
+    survivingSelections.push(rebuilt);
+    survivingRouteIds.add(route.id);
+  }
+  config.modelSelections = survivingSelections;
+  // 来源站全部被删的本地模型，其残留托管路由也要清掉。
+  config.routes = config.routes.filter((item) => item.managedBy !== 'model-selector' || survivingRouteIds.has(item.id));
 }
 
 function validateBaseUrl(value) {
@@ -1004,7 +1067,7 @@ function exposeNewKey(item) {
 function listModels(localKey) {
   const models = keyAccessModels(config);
   return models.filter((item) => !localKey || isKeyModelAllowed(localKey, item.id, config, models))
-    .map(({ id }) => ({ id, object: 'model', created: 0, owned_by: 'local-model-gateway' }));
+    .map(({ id }) => ({ id, object: 'model', created: 0, owned_by: 'sakura-ai-gateway' }));
 }
 
 function chooseRoute(model) {
@@ -1795,6 +1858,193 @@ async function prepareModalities(input, protocol, upstream, model, route, localK
   });
 }
 
+// 第三方接入验证的来源频率限制：公开接口，按来源地址限流，避免令牌被暴力猜测。
+const INTEGRATION_RATE_LIMIT_PER_MINUTE = 60;
+const integrationRateWindows = new Map();
+
+function admitIntegrationRequest(req) {
+  const address = String(req.socket?.remoteAddress || 'unknown');
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const previous = integrationRateWindows.get(address) || [];
+  const timestamps = previous.filter((timestamp) => timestamp > now - windowMs);
+  if (timestamps.length >= INTEGRATION_RATE_LIMIT_PER_MINUTE) {
+    integrationRateWindows.set(address, timestamps);
+    return { ok: false, retryAfter: Math.max(1, Math.ceil((timestamps[0] + windowMs - now) / 1000)) };
+  }
+  timestamps.push(now);
+  integrationRateWindows.set(address, timestamps);
+  return { ok: true };
+}
+
+function findIntegrationByToken(token) {
+  if (!token) return null;
+  const hashed = hashToken(token);
+  return (config.integrations || []).find((item) => item.tokenHash === hashed) || null;
+}
+
+function recordIntegrationFailure(integration, reason) {
+  if (!integration) return;
+  integration.lastFailureAt = nowIso();
+  integration.lastFailureReason = String(reason || '').slice(0, 200);
+  integration.failureCount += 1;
+}
+
+function cancelIntegrationsForKey(keyId, reason) {
+  for (const integration of config.integrations || []) {
+    if (integration.sourceKeyId === keyId && integration.status === 'active') {
+      integration.status = 'cancelled';
+      integration.cancelledAt = nowIso();
+      integration.lastFailureReason = String(reason || '').slice(0, 200);
+    }
+  }
+}
+
+// 接入方拉取模型清单时附加思考能力：从启用上游的目录里取首个同模型条目。
+function catalogCapabilityFor(modelId) {
+  for (const upstream of config.upstreams) {
+    if (upstream.enabled === false) continue;
+    const entry = catalogForUpstream(upstream).find((item) => sameModelId(item.id, modelId));
+    if (entry) {
+      return {
+        supportsThinking: entry.supportsThinking === true ? true : entry.supportsThinking === false ? false : null,
+        thinkingLevels: Array.isArray(entry.thinkingLevels) ? entry.thinkingLevels : []
+      };
+    }
+  }
+  return { supportsThinking: null, thinkingLevels: [] };
+}
+
+function accessibleModelsForKey(localKey) {
+  const models = keyAccessModels(config);
+  return models
+    .filter((item) => isKeyModelAllowed(localKey, item.id, config, models))
+    .map(({ id, upstreamModel }) => ({
+      ...catalogCapabilityFor(upstreamModel),
+      id,
+      object: 'model',
+      created: 0,
+      owned_by: 'sakura-ai-gateway'
+    }));
+}
+
+async function handleIntegration(req, res, pathname) {
+  if (pathname === '/api/integration/verify' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, integrationErrorBody('bad_request', error.message));
+      return;
+    }
+    const admission = admitIntegrationRequest(req);
+    if (!admission.ok) {
+      sendJson(res, 429, integrationErrorBody('rate_limited', '接入验证请求过于频繁，请稍后再试'), { 'Retry-After': String(admission.retryAfter) });
+      return;
+    }
+    let parsed;
+    try {
+      parsed = typeof body === 'string' ? JSON.parse(body) : body;
+    } catch {
+      sendJson(res, 400, integrationErrorBody('bad_request', '请求体必须是有效的 JSON'));
+      return;
+    }
+    const presentedToken = String(parsed?.authorization || '').trim();
+    const apiKey = String(parsed?.apiKey || '').trim();
+    const label = String(parsed?.label || '').trim();
+    let integration = findIntegrationByToken(presentedToken);
+    if (presentedToken && !integration) {
+      sendJson(res, 401, integrationErrorBody('invalid_authorization', '授权令牌无效或已被删除'));
+      return;
+    }
+    if (integration && integration.status === 'cancelled') {
+      sendJson(res, 403, integrationErrorBody('authorization_cancelled', '授权已取消，不能再用于验证', { authorization: integrationPublic(integration) }));
+      return;
+    }
+    const key = findLocalKey(apiKey);
+    if (!key) {
+      if (integration) {
+        recordIntegrationFailure(integration, '本地 API Key 无效或已停用');
+        saveConfig(config);
+      }
+      sendJson(res, 401, integrationErrorBody('unauthorized', 'API Key 无效或该 Key 已停用'));
+      return;
+    }
+    let plainToken = null;
+    if (!integration) {
+      plainToken = generateToken();
+      integration = normalizeIntegration({ sourceKeyId: key.id, label });
+      integration.tokenHash = hashToken(plainToken);
+      config.integrations.push(integration);
+    } else {
+      // 允许接入方更换其底层 Key；令牌本身不变。
+      integration.sourceKeyId = key.id;
+      if (label) integration.label = label;
+    }
+    integration.lastVerifiedAt = nowIso();
+    integration.lastFailureAt = null;
+    integration.lastFailureReason = null;
+    integration.successCount += 1;
+    saveConfig(config);
+    const payload = buildVerifyResponse({ integration, key, models: accessibleModelsForKey(key), plainToken });
+    log('接入验证成功', { integrationId: integration.id, keyId: key.id, label: integration.label, ...sourceDiagnostics(req) });
+    sendJson(res, 200, payload);
+    return;
+  }
+  if (pathname === '/api/integration/revoke' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, integrationErrorBody('bad_request', error.message));
+      return;
+    }
+    const admission = admitIntegrationRequest(req);
+    if (!admission.ok) {
+      sendJson(res, 429, integrationErrorBody('rate_limited', '请求过于频繁，请稍后再试'), { 'Retry-After': String(admission.retryAfter) });
+      return;
+    }
+    let parsed;
+    try {
+      parsed = typeof body === 'string' ? JSON.parse(body) : body;
+    } catch {
+      sendJson(res, 400, integrationErrorBody('bad_request', '请求体必须是有效的 JSON'));
+      return;
+    }
+    const token = String(parsed?.authorization || '').trim();
+    const integration = findIntegrationByToken(token);
+    if (!integration) {
+      sendJson(res, 404, integrationErrorBody('authorization_not_found', '授权令牌不存在'));
+      return;
+    }
+    if (integration.status === 'cancelled') {
+      sendJson(res, 200, { revoked: true, alreadyCancelled: true, authorization: integrationPublic(integration) });
+      return;
+    }
+    integration.status = 'cancelled';
+    integration.cancelledAt = nowIso();
+    saveConfig(config);
+    log('接入授权已取消', { integrationId: integration.id, label: integration.label, ...sourceDiagnostics(req) });
+    sendJson(res, 200, { revoked: true, authorization: integrationPublic(integration) });
+    return;
+  }
+  if (pathname === '/api/integration/status' && req.method === 'GET') {
+    const token = getApiToken(req);
+    const integration = findIntegrationByToken(token);
+    if (!integration) {
+      sendJson(res, 401, integrationErrorBody('invalid_authorization', '授权令牌无效或不存在'));
+      return;
+    }
+    const key = config.localApiKeys.find((item) => item.id === integration.sourceKeyId) || null;
+    sendJson(res, 200, {
+      authorization: integrationPublic(integration),
+      apiKey: key ? { id: key.id, name: key.name, modelAccessMode: key.modelAccessMode } : null
+    });
+    return;
+  }
+  sendJson(res, 404, integrationErrorBody('not_found', '未找到该接入接口'));
+}
+
 async function forwardModelRequest(req, res, localProtocol, input, suppliedRequestId, localKey) {
   const requestId = suppliedRequestId || requestIdFromRequest(req);
   const startedAt = nowIso();
@@ -2483,6 +2733,10 @@ function importConfig(rawConfig, preserveCredentials = true) {
   config.modelSelections = importedSelections;
   config.modelSelectionMode = source.modelSelectionMode === true || importedSelections.length > 0;
   config.settings = importedSettings;
+  // 保留凭据时沿用本机接入授权；否则导入备份中的授权（含已取消状态），令牌哈希随备份迁移。
+  config.integrations = preserveCredentials
+    ? config.integrations
+    : (Array.isArray(source.integrations) ? source.integrations : []).map(normalizeIntegration);
   upstreamBalances.clear();
   saveConfig(config);
   return publicConfig(config);
@@ -2687,10 +2941,14 @@ async function handleAdmin(req, res, pathname) {
     upstreamBalances.delete(id);
     config.routes = config.routes
       .filter((item) => item.upstreamId !== id)
-      .map((item) => ({
-        ...item,
-        fallbackUpstreamIds: (item.fallbackUpstreamIds || []).filter((fallbackId) => fallbackId !== id)
-      }));
+      .map((item) => {
+        const fallbackUpstreamIds = (item.fallbackUpstreamIds || []).filter((fallbackId) => fallbackId !== id);
+        const upstreamWeights = { ...(item.upstreamWeights || {}) };
+        delete upstreamWeights[id]; // 被删中转的权重键一起清掉，避免死键
+        return { ...item, fallbackUpstreamIds, upstreamWeights };
+      });
+    // 引用该中转的本地模型选择也一起清理：独占的删除、共享的降级到剩余站点。
+    pruneModelSelectionsForUpstream(id);
     resetRoutingState();
     saveConfig(config);
     sendJson(res, 200, publicConfig(config));
@@ -2780,6 +3038,8 @@ async function handleAdmin(req, res, pathname) {
   if (keyMatch && req.method === 'DELETE') {
     if (config.localApiKeys.length <= 1) return sendJson(res, 400, { error: { message: '至少保留一个本地 API Key' } });
     config.localApiKeys = config.localApiKeys.filter((item) => item.id !== decodeURIComponent(keyMatch[1]));
+    // 删除 Key 时，基于它的第三方接入授权一并取消，避免残留可用授权。
+    cancelIntegrationsForKey(decodeURIComponent(keyMatch[1]), '关联的本地 API Key 已删除');
     saveConfig(config);
     sendJson(res, 200, publicConfig(config));
     return;
@@ -2927,6 +3187,15 @@ async function handleAdmin(req, res, pathname) {
     sendJson(res, 200, getLogs({ limit: query.get('limit'), offset: query.get('offset') }));
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/admin/metrics/range') {
+    const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+    try {
+      sendJson(res, 200, getRangeStats({ from: query.get('from'), to: query.get('to') }));
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: { message: error.message } });
+    }
+    return;
+  }
   if (req.method === 'GET' && pathname === '/api/admin/metrics/export') {
     const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
     const scope = query.get('scope') === 'all' ? 'all' : 'recent';
@@ -2964,7 +3233,7 @@ async function requestHandler(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname;
   if (pathname === '/health') {
-    sendJson(res, 200, { status: 'ok', service: 'local-model-gateway', time: nowIso() });
+    sendJson(res, 200, { status: 'ok', service: 'sakura-ai-gateway', time: nowIso() });
     return;
   }
   if (pathname === '/auth/status' && req.method === 'GET') {
@@ -3055,6 +3324,11 @@ async function requestHandler(req, res) {
   }
   if (pathname.startsWith('/api/admin/')) {
     await handleAdmin(req, res, pathname);
+    return;
+  }
+  // 第三方接入授权：无需管理认证，凭本地 API Key 自证；令牌自证取消后续授权。
+  if (pathname.startsWith('/api/integration/')) {
+    await handleIntegration(req, res, pathname);
     return;
   }
   if (pathname === '/v1/models' && req.method === 'GET') {
@@ -3148,7 +3422,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(config.settings.port, config.settings.host, () => {
-  log(`Local Model Gateway 已启动：http://${config.settings.host}:${config.settings.port}`);
+  log(`Sakura-AI-Gateway 已启动：http://${config.settings.host}:${config.settings.port}`);
   log('本地管理访问：无需认证');
   if (adminAuth.remoteMode() === 'password') {
     log(adminAuth.isPasswordConfigured()

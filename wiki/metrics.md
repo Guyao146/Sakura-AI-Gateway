@@ -65,7 +65,7 @@
 
 ## 日志上限与压实
 
-- **默认保留 5000 条**，环境变量 `LOCAL_MODEL_GATEWAY_MAX_LOGS` 可调，**下限 100**。
+- **默认保留 5000 条**，环境变量 `SAKURA_AI_GATEWAY_MAX_LOGS` 可调，**下限 100**。
 - 追加使文件行数超过 `MAX_LOGS × 2` 时，触发一次**压实**：把内存中最新的 `MAX_LOGS` 条
   原子重写回 JSONL（`.tmp` + `rename`），避免文件无限增长。
 - 内存中始终只缓存最新 `MAX_LOGS` 条（新在前）；加载时读取文件尾部并反向。
@@ -102,6 +102,16 @@
 
 清空聚合计数、内存日志，并把 JSONL 重写为空文件（`clearMetrics`）。
 
+### `GET /api/admin/metrics/range?from=&to=`
+
+按时间范围统计明细日志，参数为 ISO 时间（含 `datetime-local` 本地时间转换后的值），闭区间：
+
+- 返回 `{from, to, matched, totals, byUpstream}`；`matched` 为命中明细条数。
+- 聚合口径与实时统计完全一致（同一 `aggregateInto`：totals、byUpstream、故障转移判定、
+  token 归属最后尝试）。参数缺失、非法或开始晚于结束返回 400。
+- 后台「按时间统计」使用该接口；范围模式下 5 秒自动刷新仍刷同一时间窗口，新请求会
+  计入当前视图。重置后返回全量统计。
+
 ### 导出与导入
 
 管理页面可以导出最近 100 条或当前日志上限内的全部用量记录。导出文件中的 `records`
@@ -123,5 +133,5 @@
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `LOCAL_MODEL_GATEWAY_MAX_LOGS` | `5000` | JSONL 日志保留条数，最小 100 |
-| `LOCAL_MODEL_GATEWAY_DATA_DIR` | 项目下 `data` | 数据目录（含 `metrics.json`、`metrics-log.jsonl`） |
+| `SAKURA_AI_GATEWAY_MAX_LOGS` | `5000` | JSONL 日志保留条数，最小 100 |
+| `SAKURA_AI_GATEWAY_DATA_DIR` | 项目下 `data` | 数据目录（含 `metrics.json`、`metrics-log.jsonl`） |

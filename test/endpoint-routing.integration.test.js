@@ -26,7 +26,7 @@ async function main() {
   const port = reserve.address().port;
   await new Promise((resolve) => reserve.close(resolve));
   const gateway = spawn(process.execPath, [path.join(root, 'src', 'server.js')], {
-    cwd: root, env: { ...process.env, LOCAL_MODEL_GATEWAY_DATA_DIR: directory, LOCAL_MODEL_GATEWAY_FORCE_PORT: String(port), LOCAL_MODEL_GATEWAY_FORCE_HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe']
+    cwd: root, env: { ...process.env, SAKURA_AI_GATEWAY_DATA_DIR: directory, SAKURA_AI_GATEWAY_FORCE_PORT: String(port), SAKURA_AI_GATEWAY_FORCE_HOST: '127.0.0.1' }, stdio: ['ignore', 'pipe', 'pipe']
   });
   let output = '';
   gateway.stdout.on('data', (chunk) => { output += chunk; });

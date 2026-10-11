@@ -6,14 +6,14 @@ using System.Text;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-namespace LocalModelGatewayClient;
+namespace SakuraAIGateway.Client;
 
 static class Program
 {
     [STAThread]
     static void Main()
     {
-        using var mutex = new Mutex(true, @"Local\LocalModelGatewayClient", out bool createdNew);
+        using var mutex = new Mutex(true, @"Local\Sakura-AI-Gateway-Client", out bool createdNew);
         if (!createdNew) return;
 
         ApplicationConfiguration.Initialize();
@@ -34,13 +34,11 @@ sealed class MainForm : Form
 
     public MainForm()
     {
-        string appData = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "LocalModelGateway");
+        string appData = DesktopData.Prepare();
         _dataDirectory = Path.Combine(appData, "gateway-data");
         _logPath = Path.Combine(appData, "gateway.log");
 
-        Text = "Local Model Gateway";
+        Text = "Sakura-AI-Gateway";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1080, 700);
         Size = new Size(1440, 940);
@@ -80,7 +78,7 @@ sealed class MainForm : Form
         {
             MessageBox.Show(
                 $"客户端启动失败：{error.Message}",
-                "Local Model Gateway",
+                "Sakura-AI-Gateway",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             Close();
@@ -121,9 +119,9 @@ sealed class MainForm : Form
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        startInfo.EnvironmentVariables["LOCAL_MODEL_GATEWAY_DATA_DIR"] = _dataDirectory;
-        startInfo.EnvironmentVariables["LOCAL_MODEL_GATEWAY_FORCE_HOST"] = "127.0.0.1";
-        startInfo.EnvironmentVariables["LOCAL_MODEL_GATEWAY_FORCE_PORT"] = _port.ToString();
+        startInfo.EnvironmentVariables["SAKURA_AI_GATEWAY_DATA_DIR"] = _dataDirectory;
+        startInfo.EnvironmentVariables["SAKURA_AI_GATEWAY_FORCE_HOST"] = "127.0.0.1";
+        startInfo.EnvironmentVariables["SAKURA_AI_GATEWAY_FORCE_PORT"] = _port.ToString();
 
         _gatewayProcess = new Process { StartInfo = startInfo };
         _gatewayProcess.OutputDataReceived += (_, e) => { if (e.Data != null) _logWriter?.WriteLine(e.Data); };

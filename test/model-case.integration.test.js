@@ -10,7 +10,7 @@ const { spawn } = require('node:child_process');
 // 显示名称沿用「当前名称」，转发时按各站自己的拼写发送；
 // 只有大小写不同的重复选择要拒绝/合并，备份导入同样按大小写归一。
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-model-case-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-model-case-'));
 const gatewayPort = 25700 + Math.floor(Math.random() * 300);
 
 function requestJson(url, options = {}) {
@@ -112,7 +112,7 @@ async function main() {
 
   const gateway = spawn(process.execPath, ['src/server.js'], {
     cwd: projectRoot,
-    env: { ...process.env, PORT: String(gatewayPort), LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory },
+    env: { ...process.env, PORT: String(gatewayPort), SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   try {

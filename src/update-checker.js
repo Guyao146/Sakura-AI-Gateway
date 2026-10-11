@@ -1,4 +1,4 @@
-const UPDATE_REPOSITORY = 'Guyao146/Local-Model-Gateway';
+const UPDATE_REPOSITORY = 'Guyao146/Sakura-AI-Gateway';
 const GITHUB_RELEASES_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases`;
 
 function versionParts(value) {
@@ -40,7 +40,7 @@ function isUpgradeArchive(asset, version) {
   if (!asset || !asset.digest) return false;
   const expected = String(version || '').replace(/^v/i, '');
   const name = String(asset.name || '').toLowerCase();
-  return (name === `local-model-gateway-v${expected}.tar.gz` || name === `local-model-gateway-${expected}.tar.gz`)
+  return (name === `sakura-ai-gateway-v${expected}.tar.gz` || name === `sakura-ai-gateway-${expected}.tar.gz`)
     && name.endsWith('.tar.gz');
 }
 
@@ -50,7 +50,7 @@ async function checkLatestRelease(currentVersion, options = {}) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(GITHUB_RELEASES_URL, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Local-Model-Gateway-Update-Checker' },
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Sakura-AI-Gateway-Update-Checker' },
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);

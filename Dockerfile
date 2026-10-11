@@ -3,7 +3,10 @@ FROM node:20-bookworm-slim
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
-    LOCAL_MODEL_GATEWAY_DATA_DIR=/app/data
+    SAKURA_AI_GATEWAY_DATA_DIR=/app/data
+
+LABEL org.opencontainers.image.title="Sakura-AI-Gateway" \
+      org.opencontainers.image.source="https://github.com/Guyao146/Sakura-AI-Gateway"
 
 WORKDIR /app
 

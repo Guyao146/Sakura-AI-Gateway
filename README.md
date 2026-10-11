@@ -1,4 +1,7 @@
-# Local Model Gateway
+# Sakura-AI-Gateway
+
+官方仓库：[Guyao146/Sakura-AI-Gateway](https://github.com/Guyao146/Sakura-AI-Gateway)。
+从改名前版本升级请先阅读[名称与数据迁移说明](wiki/migration.md)，尤其是 Docker 数据卷与桌面客户端数据目录。
 
 > 📚 **Wiki 文档**：
 > - 服务器/浏览器浏览：[`wiki/index.html`](wiki/index.html)（自包含阅读器，切页自动回到顶部；需通过 http 访问）
@@ -59,13 +62,13 @@
 制品名称带有技术栈后缀：
 
 ```text
-Local-Model-Gateway-X.Y.Z-WebView2-win-x64.zip
-Local-Model-Gateway-X.Y.Z-Electron-win-x64-Setup.exe
-Local-Model-Gateway-X.Y.Z-Electron-win-x64-Portable.exe
+Sakura-AI-Gateway-X.Y.Z-WebView2-win-x64.zip
+Sakura-AI-Gateway-X.Y.Z-Electron-win-x64-Setup.exe
+Sakura-AI-Gateway-X.Y.Z-Electron-win-x64-Portable.exe
 ```
 
 WebView2 客户端要求 Windows 已安装 Microsoft Edge WebView2 Runtime；Electron 客户端不要求
-额外安装 Electron。网关源码升级包另为 `local-model-gateway-vX.Y.Z.tar.gz`。
+额外安装 Electron。网关源码升级包另为 `Sakura-AI-Gateway-vX.Y.Z.tar.gz`。
 
 桌面客户端会为内嵌网关自动选择空闲的 `127.0.0.1` 端口，并覆盖旧配置中的监听端口，避免
 以前手动运行网关留下的 `data/config.json` 导致客户端白屏或连接到错误端口。
@@ -75,7 +78,7 @@ WebView2 客户端要求 Windows 已安装 Microsoft Edge WebView2 Runtime；Ele
 需要 Node.js 18 或更高版本（当前服务使用 Node 18+ 内置 `fetch`）。在 Windows PowerShell 中：
 
 ```powershell
-cd "C:\Users\guxua\.cline\data\workspaces\chat\local-model-gateway"
+cd "D:\VSProject\Sakura-AI-Gateway"
 node src/server.js
 ```
 
@@ -162,7 +165,7 @@ OIDC Client Secret 只从环境变量读取，不会写入 `data/config.json` �
 
 ```powershell
 $env:HOST = "0.0.0.0"
-$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/local-model-gateway"
+$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/sakura-ai-gateway"
 $env:AUTHENTIK_CLIENT_ID = "在外部 OIDC 提供商中生成的 Client ID"
 $env:AUTHENTIK_CLIENT_SECRET = "在外部 OIDC 提供商中生成的 Client Secret"
 $env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
@@ -317,7 +320,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 
 ## 请求统计和模型同步
 
-后台的“请求统计”区域会显示请求总数、成功率、故障转移次数、输入/输出/总 Token、按上游统计以及请求元数据日志。日志默认保留最近 5000 条（可用环境变量 `LOCAL_MODEL_GATEWAY_MAX_LOGS` 调整，最少 100），页面先显示最新 100 条，点击“加载更多”按 100 条为一页向下翻。从 v2.0.7 起，每条日志还会带一份**请求诊断**（点该行即可展开）：网关实际发给上游的请求体、上游返回与网关输出的前若干帧样本，以及自动修正过的异常（例如上游返回了非字符串 id）。这些样本用于排查协议转换问题，因此会包含消息内容，但**不会**包含请求头、API Key 或上游完整地址（只记录路径，如 `/v1/responses`）；每个字段都做了长度截断。可以在后台点击“清空统计”。聚合计数保存在 `data/metrics.json`，请求日志以追加写入的方式保存在 `data/metrics-log.jsonl`（旧版内联日志会在首次启动时自动迁移），与上游配置分开保存。
+后台的“请求统计”区域会显示请求总数、成功率、故障转移次数、输入/输出/总 Token、按上游统计以及请求元数据日志。日志默认保留最近 5000 条（可用环境变量 `SAKURA_AI_GATEWAY_MAX_LOGS` 调整，最少 100），页面先显示最新 100 条，点击“加载更多”按 100 条为一页向下翻。从 v2.0.7 起，每条日志还会带一份**请求诊断**（点该行即可展开）：网关实际发给上游的请求体、上游返回与网关输出的前若干帧样本，以及自动修正过的异常（例如上游返回了非字符串 id）。这些样本用于排查协议转换问题，因此会包含消息内容，但**不会**包含请求头、API Key 或上游完整地址（只记录路径，如 `/v1/responses`）；每个字段都做了长度截断。可以在后台点击“清空统计”。聚合计数保存在 `data/metrics.json`，请求日志以追加写入的方式保存在 `data/metrics-log.jsonl`（旧版内联日志会在首次启动时自动迁移），与上游配置分开保存。
 
 添加或编辑上游时，填写地址和 API Key 后可以直接点击“拉取模型”，网关会调用该站点的 `/v1/models` 并把模型 ID 回填到表单；确认列表后仍需点击“保存上游”。编辑已有上游时 API Key 可以留空，拉取会安全复用已保存的 Key。已保存的上游卡片也提供“同步模型”按钮。部分 Anthropic 上游没有标准模型列表接口，此时仍需手工填写模型。
 
@@ -403,7 +406,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 
 - `HOST`：监听地址，默认 `127.0.0.1`
 - `PORT`：监听端口，默认 `8787`
-- `LOCAL_MODEL_GATEWAY_DATA_DIR`：可选，指定配置数据目录；默认是项目下的 `data`
+- `SAKURA_AI_GATEWAY_DATA_DIR`：可选，指定配置数据目录；默认是项目下的 `data`
 - `ADMIN_REMOTE_MODE`：可选，远程管理认证方式，`oidc`（默认）或 `password`；在后台切换后以配置文件为准
 - `AUTHENTIK_ISSUER_URL`：外部 OIDC 提供商 Application 的 OIDC issuer URL
 - `AUTHENTIK_CLIENT_ID`：外部 OIDC 提供商 OAuth2/OpenID Provider 的 Client ID
@@ -428,7 +431,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 
 ## 许可证
 
-自当前提交起，Local Model Gateway 采用 [Sakura-License](LICENSE)：源码可用，受覆盖衍生作品须共享并保留署名，特定商业利用需书面授权；它不是 OSI 批准的开源许可证。采用声明与商业授权联系方式见 [LICENSING.md](LICENSING.md)。
+Sakura-AI-Gateway 采用 [Sakura-License](LICENSE)：源码可用，受覆盖衍生作品须共享并保留署名，特定商业利用需书面授权；它不是 OSI 批准的开源许可证。采用声明与商业授权联系方式见 [LICENSING.md](LICENSING.md)。
 
 - `v2.4.0` 及之前的历史发布版本仍按 `LGPL-2.1` 授权，已合法取得的权利不受影响。
 - `wiki/assets/marked.min.js` 为第三方 MIT 作品，保留其原许可，不属于本许可覆盖范围。

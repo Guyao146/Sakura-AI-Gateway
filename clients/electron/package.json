@@ -1,8 +1,9 @@
 {
-  "name": "local-model-gateway-electron",
-  "version": "2.5.2",
+  "name": "sakura-ai-gateway-electron",
+  "version": "2.6.0",
   "private": true,
-  "description": "Electron desktop client for Local Model Gateway",
+  "description": "Electron desktop client for Sakura-AI-Gateway",
+  "repository": { "type": "git", "url": "git+https://github.com/Guyao146/Sakura-AI-Gateway.git" },
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -13,23 +14,23 @@
     "electron-builder": "26.0.12"
   },
   "build": {
-    "appId": "cn.mcylyr.localmodelgateway.electron",
-    "productName": "Local Model Gateway Electron",
+    "appId": "cn.mcylyr.sakuraaigateway.electron",
+    "productName": "Sakura-AI-Gateway Electron",
     "asar": true,
-    "files": ["main.js", "preload.js", "package.json"],
+    "files": ["main.js", "preload.js", "data-directory.js", "package.json"],
     "extraResources": [{ "from": "gateway", "to": "gateway" }],
     "directories": { "output": "dist" },
     "win": {
-      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-${name}.${ext}",
+      "artifactName": "Sakura-AI-Gateway-${version}-Electron-win-${arch}-${name}.${ext}",
       "target": ["nsis", "portable"]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-Setup.${ext}"
+      "artifactName": "Sakura-AI-Gateway-${version}-Electron-win-${arch}-Setup.${ext}"
     },
     "portable": {
-      "artifactName": "Local-Model-Gateway-${version}-Electron-win-${arch}-Portable.${ext}"
+      "artifactName": "Sakura-AI-Gateway-${version}-Electron-win-${arch}-Portable.${ext}"
     }
   }
 }

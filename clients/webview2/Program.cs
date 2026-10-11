@@ -5,7 +5,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.Web.WebView2.WinForms;
 
-namespace LocalModelGateway.WebView2;
+namespace SakuraAIGateway.WebView2;
 
 internal static class Program
 {
@@ -24,7 +24,7 @@ internal sealed class GatewayForm : Form
     private readonly Label status = new()
     {
         Dock = DockStyle.Fill,
-        Text = "正在启动本地模型网关…",
+        Text = "正在启动 Sakura-AI-Gateway…",
         TextAlign = ContentAlignment.MiddleCenter,
         Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 14),
         ForeColor = Color.FromArgb(237, 243, 239),
@@ -33,11 +33,11 @@ internal sealed class GatewayForm : Form
     private Process? gateway;
     private readonly object logLock = new();
     private string logPath = "";
-    private string SettingsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalModelGateway", "desktop-port-settings.json");
+    private string SettingsPath => Path.Combine(DesktopData.Prepare(), "desktop-port-settings.json");
 
     public GatewayForm()
     {
-        Text = "Local Model Gateway · Edge WebView2";
+        Text = "Sakura-AI-Gateway · Edge WebView2";
         Width = 1220;
         Height = 860;
         MinimumSize = new Size(880, 620);
@@ -68,9 +68,10 @@ internal sealed class GatewayForm : Form
             string gatewayRoot = Path.Combine(root, "gateway");
             string entry = Path.Combine(gatewayRoot, "src", "server.js");
             if (!File.Exists(node) || !File.Exists(entry)) throw new FileNotFoundException("客户端缺少 Node.js 运行时或网关文件。");
-            string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalModelGateway", "gateway-data");
+            string appData = DesktopData.Prepare();
+            string data = Path.Combine(appData, "gateway-data");
             Directory.CreateDirectory(data);
-            logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalModelGateway", "gateway.log");
+            logPath = Path.Combine(appData, "gateway.log");
             var start = new ProcessStartInfo(node, $"\"{entry}\"")
             {
                 WorkingDirectory = gatewayRoot,
@@ -81,23 +82,23 @@ internal sealed class GatewayForm : Form
             };
             start.Environment["HOST"] = "127.0.0.1";
             start.Environment["PORT"] = port.ToString();
-            start.Environment["LOCAL_MODEL_GATEWAY_FORCE_HOST"] = "127.0.0.1";
-            start.Environment["LOCAL_MODEL_GATEWAY_FORCE_PORT"] = port.ToString();
-            start.Environment["LOCAL_MODEL_GATEWAY_FORCE_SETTINGS"] = "true";
-            start.Environment["LOCAL_MODEL_GATEWAY_DATA_DIR"] = data;
+            start.Environment["SAKURA_AI_GATEWAY_FORCE_HOST"] = "127.0.0.1";
+            start.Environment["SAKURA_AI_GATEWAY_FORCE_PORT"] = port.ToString();
+            start.Environment["SAKURA_AI_GATEWAY_FORCE_SETTINGS"] = "true";
+            start.Environment["SAKURA_AI_GATEWAY_DATA_DIR"] = data;
             gateway = Process.Start(start) ?? throw new InvalidOperationException("无法启动本地网关进程。");
             gateway.EnableRaisingEvents = true;
             gateway.Exited += (_, _) =>
             {
                 if (gateway.ExitCode != 0 && IsHandleCreated)
-                    BeginInvoke(() => status.Text = $"Local Model Gateway 启动失败\n\n网关子进程已退出（代码 {gateway.ExitCode}）。\n\n请查看：\n{logPath}");
+                    BeginInvoke(() => status.Text = $"Sakura-AI-Gateway 启动失败\n\n网关子进程已退出（代码 {gateway.ExitCode}）。\n\n请查看：\n{logPath}");
             };
             gateway.OutputDataReceived += (_, args) => AppendLog(args.Data);
             gateway.ErrorDataReceived += (_, args) => AppendLog(args.Data);
             gateway.BeginOutputReadLine();
             gateway.BeginErrorReadLine();
             await WaitForGatewayAsync();
-            string webData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LocalModelGateway", "webview2");
+            string webData = Path.Combine(appData, "webview2");
             var environment = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, webData);
             await webView.EnsureCoreWebView2Async(environment);
             status.Visible = false;
@@ -105,7 +106,7 @@ internal sealed class GatewayForm : Form
         }
         catch (Exception error)
         {
-            status.Text = $"Local Model Gateway 启动失败\n\n{error.Message}\n\n请确认客户端文件完整，并查看：\n{logPath}";
+            status.Text = $"Sakura-AI-Gateway 启动失败\n\n{error.Message}\n\n请确认客户端文件完整，并查看：\n{logPath}";
         }
     }
 

@@ -6,7 +6,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 
 const projectRoot = path.join(__dirname, '..');
-const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'local-model-gateway-selection-'));
+const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-selection-'));
 const gatewayPort = 21000 + Math.floor(Math.random() * 1000);
 
 function requestJson(url, options = {}) {
@@ -120,7 +120,7 @@ async function main() {
   const anthropicPort = anthropic.address().port;
   const gateway = spawn(process.execPath, ['src/server.js'], {
     cwd: projectRoot,
-    env: { ...process.env, PORT: String(gatewayPort), LOCAL_MODEL_GATEWAY_DATA_DIR: dataDirectory },
+    env: { ...process.env, PORT: String(gatewayPort), SAKURA_AI_GATEWAY_DATA_DIR: dataDirectory },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stderr = '';
