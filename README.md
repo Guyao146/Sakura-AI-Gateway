@@ -1,5 +1,8 @@
 # Sakura-AI-Gateway
 
+[![樱落生态成员](https://raw.githubusercontent.com/Guyao146/Sakura-EcoSystem-wiki/main/assets/ConnectEcoSystem.svg)](https://mcylyr.cn)
+[![已编写Wiki](https://raw.githubusercontent.com/Guyao146/Sakura-EcoSystem-wiki/main/assets/sakura-wiki.svg)](https://wiki.mcylyr.cn/)
+
 官方仓库：[Guyao146/Sakura-AI-Gateway](https://github.com/Guyao146/Sakura-AI-Gateway)。
 从改名前版本升级请先阅读[名称与数据迁移说明](wiki/migration.md)，尤其是 Docker 数据卷与桌面客户端数据目录。
 
