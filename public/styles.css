@@ -28,9 +28,9 @@ button { cursor: pointer; }
 .topbar-side { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
 .eyebrow, .section-number { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .18em; }
 h1, h2, p { margin: 0; }
-h1 { margin-top: 9px; font-size: clamp(34px, 5vw, 58px); letter-spacing: -.055em; line-height: .98; }
+h1 { margin-top: 7px; font-size: clamp(24px, 2.8vw, 34px); letter-spacing: -.04em; line-height: 1.1; }
 h2 { display: inline; margin-left: 14px; font-size: 21px; letter-spacing: -.025em; }
-.subtitle { margin-top: 17px; color: var(--muted); font-size: 15px; }
+.subtitle { margin-top: 12px; color: var(--muted); font-size: 15px; }
 .status-pill { display: flex; align-items: center; gap: 9px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #d5a85c; box-shadow: 0 0 12px currentColor; }
 .status-dot.ok { background: var(--accent); }
@@ -398,7 +398,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .topbar { padding: 0 0 28px; border-bottom: 1px solid var(--border); }
 .eyebrow { display: inline-flex; align-items: center; gap: 9px; letter-spacing: .22em; }
 .eyebrow::before { content: ''; width: 8px; height: 8px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 14px #9be5bd40; }
-h1 { font-size: clamp(30px, 4vw, 46px); line-height: 1.15; letter-spacing: -.045em; overflow-wrap: anywhere; }
+h1 { font-size: clamp(22px, 2.4vw, 30px); line-height: 1.2; letter-spacing: -.035em; overflow-wrap: anywhere; }
 .topbar > div:first-child { min-width: 0; max-width: 100%; }
 .subtitle { margin-top: 12px; line-height: 1.7; }
 .status-pill { background: #12271d80; border-color: #375544; }
