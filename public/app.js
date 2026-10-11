@@ -13,7 +13,10 @@ const state = {
   metricsRefreshInFlight: false,
 metricsRefreshTimer: null,
 // 时间范围统计：{ from, to, data }；为 null 时展示全部统计。
-metricsRange: null
+metricsRange: null,
+// 请求日志筛选：关键字 / Key / 时间段，任一为空表示不限制。
+logFilters: { keyword: '', keyId: '', from: '', to: '' },
+logSearchTimer: null
 };
 state.activeTab = 'overview';
 const $ = (selector) => document.querySelector(selector);
@@ -137,18 +140,28 @@ function enablePanelDragging() {
   for (const id of savedOrder) if (byId.has(id)) dashboard.appendChild(byId.get(id));
   for (const panel of panels) if (!savedOrder.includes(panel.dataset.panelId)) dashboard.appendChild(panel);
   for (const panel of panels) {
-    panel.draggable = true;
+    // draggable=true 会让浏览器把整个面板当作拖拽对象，从而禁止面板内文本选择；默认关闭，只在手柄按下时打开。
+    panel.draggable = false;
     const heading = panel.querySelector(':scope > .panel-heading > div');
     if (heading && !heading.querySelector('[data-panel-drag-handle]')) {
       heading.insertAdjacentHTML('afterbegin', '<button type="button" class="panel-drag-handle" data-panel-drag-handle aria-label="拖动调整功能卡片位置" title="拖动排序">⋮⋮</button>');
     }
+    const handle = heading?.querySelector('[data-panel-drag-handle]');
+    // dragstart 的 target 是被拖拽元素（面板）本身而不是手柄，
+    // 所以用手柄按下时打的标记来区分“手柄发起的拖拽”与“面板内其他位置”。
+    handle?.addEventListener('pointerdown', () => {
+      panel.draggable = true;
+      panel.dataset.dragFromHandle = 'true';
+    });
   }
   dashboard.addEventListener('dragstart', (event) => {
-    const panel = event.target.closest('[data-panel-drag-handle]')?.closest('[data-panel-id]');
-    if (!panel || panel.parentElement !== dashboard) {
-      if (event.target.closest('[data-panel-id]')?.parentElement === dashboard) event.preventDefault();
+    const panel = event.target.closest('[data-panel-id]');
+    // 只允许从手柄发起的拖拽；其他位置（如选中文本拖出）一律拒绝，以保证内容可复制。
+    if (!panel || panel.parentElement !== dashboard || panel.dataset.dragFromHandle !== 'true') {
+      if (panel?.parentElement === dashboard) event.preventDefault();
       return;
     }
+    delete panel.dataset.dragFromHandle;
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', panel.dataset.panelId);
     panel.classList.add('panel-dragging');
@@ -167,7 +180,13 @@ function enablePanelDragging() {
     const order = [...dashboard.querySelectorAll(':scope > [data-panel-id]')].map((panel) => panel.dataset.panelId);
     try { localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order)); } catch { /* sorting remains active until reload */ }
   });
-  dashboard.addEventListener('dragend', () => dashboard.querySelector(':scope > .panel-dragging')?.classList.remove('panel-dragging'));
+  const resetPanelDraggable = () => dashboard.querySelectorAll(':scope > [data-panel-id]').forEach((panel) => { panel.draggable = false; delete panel.dataset.dragFromHandle; });
+  dashboard.addEventListener('dragend', () => {
+    dashboard.querySelector(':scope > .panel-dragging')?.classList.remove('panel-dragging');
+    resetPanelDraggable();
+  });
+  dashboard.addEventListener('pointerup', resetPanelDraggable);
+  dashboard.addEventListener('pointercancel', resetPanelDraggable);
 }
 
 function formatNumber(value) {
@@ -311,14 +330,32 @@ function saveCardOrder(type, container) {
 function enableCardDragging(type, container) {
   if (!container || container.dataset.dragBound === 'true') return;
   container.dataset.dragBound = 'true';
+  // 与面板同理：只有按住 ⋮⋮ 手柄才允许拖动，卡片其余内容保持可选中复制。
+  container.addEventListener('pointerdown', (event) => {
+    const handle = event.target.closest('[data-drag-handle]');
+    if (!handle) return;
+    const card = handle.closest('[data-card-id]');
+    if (card) {
+      card.draggable = true;
+      card.dataset.dragFromHandle = 'true';
+    }
+  });
+  const resetCardDraggable = () => container.querySelectorAll('[data-card-id]').forEach((card) => { card.draggable = false; delete card.dataset.dragFromHandle; });
+  container.addEventListener('pointerup', resetCardDraggable);
+  container.addEventListener('pointercancel', resetCardDraggable);
   container.addEventListener('dragstart', (event) => {
     const card = event.target.closest('[data-card-id]');
-    if (!card) { event.preventDefault(); return; }
+    // 只允许从手柄发起的拖拽，避免选中文本拖出时误触发排序。
+    if (!card || card.dataset.dragFromHandle !== 'true') { event.preventDefault(); return; }
+    delete card.dataset.dragFromHandle;
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', card.dataset.cardId);
     card.classList.add('dragging');
   });
-  container.addEventListener('dragend', (event) => event.target.closest('[data-card-id]')?.classList.remove('dragging'));
+  container.addEventListener('dragend', (event) => {
+    event.target.closest('[data-card-id]')?.classList.remove('dragging');
+    resetCardDraggable();
+  });
   container.addEventListener('dragover', (event) => {
     const dragging = container.querySelector('.dragging');
     const target = event.target.closest('[data-card-id]');
@@ -623,7 +660,7 @@ function render() {
   const healthById = new Map((state.health?.items || []).map((item) => [item.upstreamId, item]));
   const balanceById = new Map((state.balances?.items || []).map((item) => [item.upstreamId, item]));
   $('#upstreamList').innerHTML = upstreams.length ? upstreams.map((item) => `
-    <article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}">
+    <article class="item-card" data-card-id="${escapeHtml(item.id)}">
       <button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整上游卡片位置" title="拖动排序">⋮⋮</button>
       <div><div class="item-title">${escapeHtml(item.name)}</div>
         <div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">${item.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容'}</span><span class="tag">${escapeHtml(clientIdentityLabel(item))}</span><span class="tag ${healthById.get(item.id)?.state === 'open' ? 'off' : 'active'}">${healthLabel(healthById.get(item.id))}</span><span>${escapeHtml(item.baseUrl)}</span></div>
@@ -637,10 +674,10 @@ function render() {
     const fallbacks = (item.fallbackUpstreamIds || []).map((id) => upstreams.find((candidate) => candidate.id === id)?.name || '已删除').join(' → ');
     const strategy = { failover: '故障转移', round_robin: '轮询', weighted: '加权轮询', random: '随机' }[item.strategy || 'failover'] || '故障转移';
     const protocolTag = item.responsesMode === 'native' ? '<span class="tag">协议：Responses</span>' : item.responsesMode === 'chat' ? '<span class="tag">协议：Chat</span>' : '';
-    return `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整路由卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span>${protocolTag}<span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
+    return `<article class="item-card" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整路由卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title"><code>${escapeHtml(item.localModel)}</code> <span class="muted">→</span> <code>${escapeHtml(item.upstreamModel)}</code></div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span class="tag">策略：${strategy}</span>${protocolTag}<span>主上游：${escapeHtml(upstream?.name || '已删除')}</span>${fallbacks ? `<span>备用：${escapeHtml(fallbacks)}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-route" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button delete" data-action="delete-route" data-id="${escapeHtml(item.id)}">删除</button></div></article>`;
   }).join('') : '<div class="empty">还没有路由。只有一个启用的上游时，未配置路由的模型会自动转发。</div>';
 
-  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card" draggable="true" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整 Key 卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div>${keyAccessBadge(item)}<div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
+  $('#keyList').innerHTML = localApiKeys.length ? localApiKeys.map((item) => `<article class="item-card" data-card-id="${escapeHtml(item.id)}"><button type="button" class="drag-handle" data-drag-handle aria-label="拖动调整 Key 卡片位置" title="拖动排序">⋮⋮</button><div><div class="item-title">${escapeHtml(item.name)}</div><div class="key-value">${escapeHtml(item.key)}</div>${keyAccessBadge(item)}<div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span></div></div><div class="item-actions"><button class="text-button" data-action="copy-key" data-id="${escapeHtml(item.id)}">复制</button><button class="text-button" data-action="edit-key" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-key" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-key" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有本地调用 Key。</div>';
 
   const settings = state.config.settings || {};
   $('#upstreamTimeoutMs').value = settings.upstreamTimeoutMs ?? 600000;
@@ -800,7 +837,7 @@ function renderLogDetailRow(diag) {
     + section('上游响应样本（前若干帧）', (diag.upstreamResponse || []).join('\n'))
     + section('网关输出样本（发给客户端，前若干帧）', (diag.output || []).join('\n'))
     + list('警告', diag.warnings);
-  return `<tr class="log-detail-row hidden"><td colspan="10">${body}</td></tr>`;
+  return `<tr class="log-detail-row hidden"><td colspan="11">${body}</td></tr>`;
 }
 
 function renderLogRow(entry) {
@@ -829,9 +866,10 @@ function renderLogRow(entry) {
   }).join(' → ');
   const strategy = escapeHtml(STRATEGY_LABELS[entry.strategy] || entry.strategy || '故障转移');
   const attemptDetail = attempts ? `<span class="log-detail" title="${escapeHtml(attempts)}">${escapeHtml(attempts)}</span>` : '';
-  const hasDiag = Boolean(entry.diagnostics);
+  const digest = entry.contentDigest ? String(entry.contentDigest).slice(0, 60) : '';
+  const digestCell = digest ? `<td class="log-content" title="${escapeHtml(entry.contentDigest)}">${escapeHtml(digest)}</td>` : '<td class="log-content muted">-</td>';
   const rowClass = `log-row${hasDiag ? ' log-row-expandable' : ''}`;
-  const main = `<tr class="${rowClass}"><td><code>${escapeHtml(entry.id || '-')}</code>${hasDiag ? '<span class="small-tag">诊断</span>' : ''}</td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td><td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${upstreamCodeTag}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
+  const main = `<tr class="${rowClass}"><td><code>${escapeHtml(entry.id || '-')}</code>${hasDiag ? '<span class="small-tag">诊断</span>' : ''}</td><td>${escapeHtml(formatTime(entry.finishedAt || entry.startedAt))}</td><td>${escapeHtml(protocol)}${entry.stream ? '<span class="small-tag">流式</span>' : ''}</td><td>${model}</td>${digestCell}<td>${strategy}${attemptDetail}</td><td>${escapeHtml(entry.upstream || '-')}</td><td>${escapeHtml(entry.status)}</td><td>${escapeHtml(entry.durationMs)} ms</td><td>${escapeHtml(entry.usage?.totalTokens || 0)}</td><td class="log-result ${entry.success ? 'success-text' : 'error-text'}"${errorTitle}>${entry.success ? '成功' : `失败：${escapeHtml(entry.error || '未知错误')}`}${upstreamCodeTag}${entry.failover ? '<span class="small-tag">已切换</span>' : ''}</td></tr>`;
   return hasDiag ? main + renderLogDetailRow(entry.diagnostics) : main;
 }
 
@@ -842,10 +880,91 @@ function updateLogSummary() {
   if (summary) {
     const maxLabel = page.maxLogs ? `，最多保留最近 ${formatNumber(page.maxLogs)} 条` : '';
     const sampleLabel = shown ? '，点击「诊断」行查看上游请求与输出样本' : '，仅记录元数据';
-    summary.textContent = page.total ? `已显示 ${formatNumber(shown)} / ${formatNumber(page.total)} 条${maxLabel}${sampleLabel}` : '仅记录元数据';
+    const active = activeLogFilters();
+    const filterLabel = active ? `，筛选：${active}` : '';
+    summary.textContent = page.total ? `已显示 ${formatNumber(shown)} / ${formatNumber(page.total)} 条${maxLabel}${filterLabel}${sampleLabel}` : (filterLabel ? `没有匹配筛选条件的请求记录${filterLabel}` : '仅记录元数据');
   }
   const more = $('#requestLogMore');
   if (more) more.classList.toggle('hidden', !page.hasMore);
+}
+
+﻿function currentLogFilters() {
+  return {
+    keyword: ($('#logSearchInput')?.value || '').trim(),
+    keyId: ($('#logKeyFilter')?.value || '').trim(),
+    from: formatRangeInput($('#logRangeFrom')?.value || ''),
+    to: formatRangeInput($('#logRangeTo')?.value || '')
+  };
+}
+
+function activeLogFilters() {
+  const filters = state.logFilters || {};
+  const parts = [];
+  if (filters.keyword) parts.push(`关键字「${filters.keyword}」`);
+  if (filters.keyId) {
+    const option = $('#logKeyFilter')?.querySelector(`option[value="${filters.keyId}"]`);
+    parts.push(`Key：${option?.textContent || filters.keyId}`);
+  }
+  if (filters.from && filters.to) parts.push(`${filters.from.replace('T', ' ')} ~ ${filters.to.replace('T', ' ')}`);
+  else if (filters.from) parts.push(`从 ${filters.from.replace('T', ' ')}`);
+  else if (filters.to) parts.push(`至 ${filters.to.replace('T', ' ')}`);
+  return parts.join('，');
+}
+
+function logFiltersQueryString(offset) {
+  const filters = state.logFilters || {};
+  const params = new URLSearchParams();
+  if (filters.keyword) params.set('keyword', filters.keyword);
+  if (filters.keyId) params.set('keyId', filters.keyId);
+  if (filters.from) params.set('from', filters.from);
+  if (filters.to) params.set('to', filters.to);
+  params.set('offset', String(offset));
+  params.set('limit', '100');
+  return params.toString();
+}
+
+async function refreshLogKeyOptions() {
+  const select = $('#logKeyFilter');
+  if (!select) return;
+  const selected = (state.logFilters?.keyId) || select.value || '';
+  try {
+    const data = await api('/api/admin/metrics/keys');
+    const keys = data.keys || [];
+    select.innerHTML = '<option value="">全部 Key</option>' + keys.map((item) =>
+      `<option value="${escapeHtml(item.keyId)}">${escapeHtml(item.keyName || item.keyId)}（${formatNumber(item.requests)} 次）</option>`).join('');
+    select.value = keys.some((item) => item.keyId === selected) ? selected : '';
+  } catch {
+    // 保留下拉框现有内容，筛选不因 Key 列表加载失败而中断。
+  }
+}
+
+async function applyLogFilters() {
+  state.logFilters = currentLogFilters();
+  const button = $('#refreshLogsButton');
+  if (button) { button.disabled = true; button.textContent = '刷新中…'; }
+  try {
+    const page = await api(`/api/admin/metrics/logs?${logFiltersQueryString(0)}`);
+    const items = page.items || [];
+    $('#requestLogBody').innerHTML = items.map(renderLogRow).join('');
+    $('#metricsEmpty').classList.toggle('hidden', items.length > 0);
+    $('#logFilterEmpty')?.classList.toggle('hidden', items.length > 0 || !activeLogFilters());
+    state.logPage = page;
+    updateLogSummary();
+  } catch (error) {
+    toast(`筛选请求日志失败：${error.message}`, 'error');
+  } finally {
+    if (button) { button.disabled = false; button.textContent = '刷新日志'; }
+  }
+  refreshLogKeyOptions();
+}
+
+function resetLogFilters() {
+  $('#logSearchInput').value = '';
+  $('#logKeyFilter').value = '';
+  $('#logRangeFrom').value = '';
+  $('#logRangeTo').value = '';
+  state.logFilters = { keyword: '', keyId: '', from: '', to: '' };
+  applyLogFilters();
 }
 
 async function loadMoreLogs() {
@@ -855,7 +974,7 @@ async function loadMoreLogs() {
   if (button) { button.disabled = true; button.textContent = '加载中…'; }
   const shown = $('#requestLogBody').querySelectorAll('.log-row').length;
   try {
-    const page = await api(`/api/admin/metrics/logs?offset=${shown}&limit=100`);
+    const page = await api(`/api/admin/metrics/logs?${logFiltersQueryString(shown)}`);
     $('#requestLogBody').insertAdjacentHTML('beforeend', (page.items || []).map(renderLogRow).join(''));
     state.logPage = { ...state.logPage, offset: page.offset, total: page.total, hasMore: page.hasMore, maxLogs: page.maxLogs };
     updateLogSummary();
@@ -871,10 +990,11 @@ async function refreshRequestLogs() {
   const button = $('#refreshLogsButton');
   if (button) { button.disabled = true; button.textContent = '刷新中…'; }
   try {
-    const page = await api('/api/admin/metrics/logs?offset=0&limit=100');
+    const page = await api(`/api/admin/metrics/logs?${logFiltersQueryString(0)}`);
     const items = page.items || [];
     $('#requestLogBody').innerHTML = items.map(renderLogRow).join('');
     $('#metricsEmpty').classList.toggle('hidden', items.length > 0);
+    $('#logFilterEmpty')?.classList.toggle('hidden', items.length > 0 || !activeLogFilters());
     state.logPage = page;
     updateLogSummary();
   } catch (error) {
@@ -882,6 +1002,7 @@ async function refreshRequestLogs() {
   } finally {
     if (button) { button.disabled = false; button.textContent = '刷新日志'; }
   }
+  refreshLogKeyOptions();
 }
 
 async function loadConfig() {
@@ -1680,6 +1801,14 @@ $('#requestLogBody').addEventListener('click', (event) => {
   if (detail && detail.classList.contains('log-detail-row')) detail.classList.toggle('hidden');
 });
 $('#loadMoreLogsButton').addEventListener('click', loadMoreLogs);
+$('#applyLogFilterButton').addEventListener('click', applyLogFilters);
+$('#resetLogFilterButton').addEventListener('click', resetLogFilters);
+$('#logKeyFilter').addEventListener('change', applyLogFilters);
+// 搜索框输入后防抖 300ms 再筛选，避免每敲一个字就发一次请求。
+$('#logSearchInput').addEventListener('input', () => {
+  if (state.logSearchTimer) clearTimeout(state.logSearchTimer);
+  state.logSearchTimer = setTimeout(() => { state.logSearchTimer = null; applyLogFilters(); }, 300);
+});
 $('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
 $('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));
 $('#importUsageButton').addEventListener('click', () => $('#usageFileInput').click());

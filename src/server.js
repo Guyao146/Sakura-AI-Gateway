@@ -33,7 +33,7 @@ const {
 } = require('./protocol');
 const { normalizeKeyAccess, modelRoute, keyAccessModels, isKeyModelAllowed } = require('../public/key-access');
 const { modalityMetadata, supportsInput, partModality, mapInputParts, inputMediaParts, assertMediaPreserved, normalizeTranslator } = require('./modalities');
-const { recordRequest, getMetrics, getLogs, getAllLogs, getRangeStats, importUsageRecords, clearMetrics } = require('./metrics');
+const { recordRequest, getMetrics, getLogs, searchLogs, listLogKeys, getAllLogs, getRangeStats, importUsageRecords, clearMetrics } = require('./metrics');
 const { STRATEGIES, strategyFor, orderCandidates, resetRoutingState } = require('./routing');
 const { inspectStreamStart } = require('./stream-start');
 const { createResponsesStream, createAnthropicStream } = require('./stream-conversion');
@@ -1126,6 +1126,50 @@ function requestIdFromRequest(req) {
   return req.gatewayRequestId;
 }
 
+// 单条消息的可读文本：content 为字符串时直接使用，为数组时只拼接文本块（跳过图片、工具结果等）。
+function messageText(message) {
+  if (!message || typeof message !== 'object') return '';
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part && typeof part === 'object' && (part.type === 'text' || typeof part.text === 'string') && typeof part.text === 'string')
+      .map((part) => part.text)
+      .join('\n');
+  }
+  return '';
+}
+
+// 客户端上传内容的可搜索摘要：取最后一条用户消息的文本，统一折叠空白并截断。
+// 只用于请求日志检索，不记录完整请求正文、请求头或凭据。
+function extractContentDigest(input, protocol) {
+  if (!input || typeof input !== 'object') return '';
+  const candidates = [];
+  if (protocol === 'responses') {
+    if (typeof input.input === 'string') candidates.push(input.input);
+    if (Array.isArray(input.input)) {
+      for (let index = input.input.length - 1; index >= 0; index -= 1) {
+        const item = input.input[index];
+        if (!item || typeof item !== 'object') continue;
+        const text = typeof item.content === 'string' ? item.content : messageText(item);
+        if (text) { candidates.push(text); break; }
+      }
+    }
+  }
+  if (Array.isArray(input.messages)) {
+    for (let index = input.messages.length - 1; index >= 0; index -= 1) {
+      const message = input.messages[index];
+      if (!message || typeof message !== 'object' || message.role !== 'user') continue;
+      const text = messageText(message);
+      if (text) { candidates.push(text); break; }
+    }
+  }
+  if (typeof input.instructions === 'string' && input.instructions.trim()) candidates.push(input.instructions);
+  if (typeof input.system === 'string' && input.system.trim()) candidates.push(input.system);
+  const digest = candidates.map((text) => String(text).trim()).filter(Boolean).join('\n').replace(/\s+/g, ' ').trim();
+  return digest.slice(0, 500);
+}
+
 // /v1/responses 与 /v1/chat/completions 的思考参数形态不同：前者用 reasoning: { effort }，
 // 后者用 reasoning_effort。网关注入或客户端透传的参数必须与实际调用的端点匹配，
 // 否则上游会以“调用的接口类型和传入的参数不匹配”拒绝请求。
@@ -2082,6 +2126,8 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
   const attempts = [];
   let selectedStrategy = 'failover';
   const diag = createDiagnostics();
+  // 客户端上传内容的摘要：供请求日志搜索使用，不保存完整请求正文。
+  const contentDigest = extractContentDigest(input, localProtocol);
   log('model request started', { requestId, protocol: localProtocol, model: localModel, stream: wantsStream });
   const finishMetrics = (details) => safeRecordRequest({
     id: requestId,
@@ -2094,6 +2140,9 @@ async function forwardModelRequest(req, res, localProtocol, input, suppliedReque
     stream: wantsStream,
     attempts,
     diag,
+    contentDigest,
+    keyId: localKey?.id,
+    keyName: localKey?.name,
     ...details
   });
   if (!localModel) {
@@ -3241,7 +3290,23 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/admin/metrics/logs') {
     const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
-    sendJson(res, 200, getLogs({ limit: query.get('limit'), offset: query.get('offset') }));
+    const keyword = query.get('keyword');
+    const keyId = query.get('keyId');
+    const from = query.get('from');
+    const to = query.get('to');
+    if (keyword === null && keyId === null && from === null && to === null) {
+      sendJson(res, 200, getLogs({ limit: query.get('limit'), offset: query.get('offset') }));
+      return;
+    }
+    try {
+      sendJson(res, 200, searchLogs({ keyword, keyId, from, to, limit: query.get('limit'), offset: query.get('offset') }));
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: { message: error.message } });
+    }
+    return;
+  }
+  if (req.method === 'GET' && pathname === '/api/admin/metrics/keys') {
+    sendJson(res, 200, { keys: listLogKeys() });
     return;
   }
   if (req.method === 'GET' && pathname === '/api/admin/metrics/range') {

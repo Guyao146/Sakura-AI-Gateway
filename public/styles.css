@@ -18,10 +18,12 @@
 }
 
 * { box-sizing: border-box; }
+body { user-select: text; -webkit-user-select: text; }
+.drag-handle, .panel-drag-handle { user-select: none; -webkit-user-select: none; }
 body { margin: 0; min-width: 320px; background: radial-gradient(circle at 75% -10%, #25463a 0, transparent 32rem), var(--bg); color: var(--text); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
-.shell { width: min(1360px, calc(100% - 36px)); margin: 0 auto; padding: 58px 0 90px; }
+.shell { width: calc(100% - 36px); margin: 0 auto; padding: 58px 0 90px; }
 .topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 30px; }
 .topbar-side { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
 .eyebrow, .section-number { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .18em; }
@@ -163,7 +165,15 @@ table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 11p
 th, td { padding: 11px 12px; border-bottom: 1px solid #293234; text-align: left; white-space: nowrap; }
 th { color: var(--muted); background: #14191a; font-weight: 600; }
 tr:last-child td { border-bottom: 0; }
+.request-log-table { max-height: calc(100dvh - 320px); overflow-y: auto; }
 .request-log-table table { min-width: 1200px; }
+.request-log-table thead th { position: sticky; top: 0; z-index: 1; background: #14191a; }
+.request-log-table tbody tr { background: var(--surface-2); }
+.request-log-table tbody tr:nth-child(even) { background: #182320; }
+.log-filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: #16211b66; }
+.log-filter-bar #logSearchInput { flex: 1 1 240px; min-width: 200px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 13px; }
+.log-filter-bar #logKeyFilter { padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 13px; max-width: 220px; }
+.log-content { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 .request-log-table td { vertical-align: top; }
 .log-detail { display: block; max-width: 260px; margin-top: 5px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
 .log-result { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
@@ -461,6 +471,7 @@ dialog { max-height: calc(100dvh - 32px); border-radius: 18px; border-color: #45
   .notice { flex-direction: column; gap: 5px; }
   .two-columns { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: 1fr; }
+  .request-log-table { max-height: none; overflow-y: visible; }
   .upstream-stats { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .model-prefix-header { align-items: stretch; flex-direction: column; padding: 8px; }

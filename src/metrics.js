@@ -10,6 +10,8 @@ const MAX_LOGS = Number.isFinite(parsedMaxLogs) && parsedMaxLogs >= 100 ? Math.f
 const DEFAULT_LOG_LIMIT = 100;
 const MAX_LOG_LIMIT = 500;
 const MAX_ATTEMPTS_PER_LOG = 12;
+// 客户端请求内容的可搜索摘要长度：只保留最后一条用户消息的截断文本。
+const MAX_CONTENT_DIGEST = 500;
 
 function emptyMetrics() {
   return {
@@ -256,6 +258,8 @@ function recordRequest(entry) {
     finishedAt: entry.finishedAt || new Date().toISOString(),
     protocol: ['anthropic', 'responses'].includes(entry.protocol) ? entry.protocol : 'openai',
     strategy: ['failover', 'round_robin', 'random', 'weighted'].includes(entry.strategy) ? entry.strategy : 'failover',
+    ...(entry.keyId ? { keyId: String(entry.keyId).slice(0, 60) } : {}),
+    ...(entry.keyName ? { keyName: String(entry.keyName).slice(0, 100) } : {}),
     model: String(entry.model || '').slice(0, 200),
     upstream: entry.upstream ? String(entry.upstream).slice(0, 120) : null,
     upstreamModel: entry.upstreamModel ? String(entry.upstreamModel).slice(0, 200) : null,
@@ -263,6 +267,9 @@ function recordRequest(entry) {
     durationMs: Math.max(0, Math.round(numberOrZero(entry.durationMs))),
     stream: entry.stream === true,
     success,
+    ...(typeof entry.contentDigest === 'string' && entry.contentDigest.trim()
+      ? { contentDigest: entry.contentDigest.trim().slice(0, MAX_CONTENT_DIGEST) }
+      : {}),
     // failover 表示真的换了上游：原地重试同一个站不算切换。
     failover: new Set((Array.isArray(entry.attempts) ? entry.attempts : []).map((attempt) => attempt.upstream)).size > 1,
     attempts: normalizeAttempts(entry.attempts),
@@ -286,6 +293,11 @@ function normalizeImportedLog(entry) {
   const id = String(entry.id || '').trim();
   if (!id || id.length > 120) throw Object.assign(new Error('用量记录缺少有效的请求 ID'), { statusCode: 400 });
   const normalized = { ...entry, id, usage: normalizeUsage(entry.usage), attempts: normalizeAttempts(entry.attempts) };
+  if (typeof normalized.contentDigest === 'string' && normalized.contentDigest.trim()) {
+    normalized.contentDigest = normalized.contentDigest.trim().slice(0, MAX_CONTENT_DIGEST);
+  } else {
+    delete normalized.contentDigest;
+  }
   const importedUpstreamError = normalizeErrorDetails(entry.upstreamError);
   if (importedUpstreamError) normalized.upstreamError = importedUpstreamError;
   return normalized;
@@ -378,6 +390,95 @@ function getLogs({ limit, offset } = {}) {
   };
 }
 
+// 单条日志的可搜索文本：覆盖请求 ID、模型、上游、Key 名称、错误、内容摘要与每次尝试的错误码。
+function logEntrySearchText(entry) {
+  const parts = [entry.id, entry.model, entry.upstreamModel, entry.upstream, entry.keyName, entry.error, entry.contentDigest];
+  for (const attempt of Array.isArray(entry.attempts) ? entry.attempts : []) {
+    if (!attempt) continue;
+    const attemptParts = [attempt.upstream, attempt.error?.code, attempt.error?.type, attempt.error?.message];
+    parts.push(attemptParts.filter((value) => typeof value === 'string' && value).join(' '));
+  }
+  return parts.filter((value) => typeof value === 'string' && value).join('\n').toLowerCase();
+}
+
+function logEntryTime(entry) {
+  const time = Date.parse(entry.finishedAt || entry.startedAt);
+  return Number.isFinite(time) ? time : NaN;
+}
+
+function normalizeKeyword(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return text.length > 200 ? text.slice(0, 200) : text;
+}
+
+// 请求日志的统一筛选核心：关键字、Key 与时间段可任意组合，时间段为闭区间。
+function filterRequestLog(entries, { keyword, keyId, from, to } = {}) {
+  const needle = normalizeKeyword(keyword);
+  const keyFilter = keyId === undefined || keyId === null ? '' : String(keyId);
+  const hasFrom = from !== undefined && from !== null && from !== '';
+  const hasTo = to !== undefined && to !== null && to !== '';
+  const startTime = hasFrom ? Date.parse(String(from)) : null;
+  const endTime = hasTo ? Date.parse(String(to)) : null;
+  if (hasFrom && !Number.isFinite(startTime)) {
+    throw Object.assign(new Error('日志筛选的开始时间无效'), { statusCode: 400 });
+  }
+  if (hasTo && !Number.isFinite(endTime)) {
+    throw Object.assign(new Error('日志筛选的结束时间无效'), { statusCode: 400 });
+  }
+  if (startTime !== null && endTime !== null && startTime > endTime) {
+    throw Object.assign(new Error('日志筛选的开始时间不能晚于结束时间'), { statusCode: 400 });
+  }
+  return entries.filter((entry) => {
+    if (keyFilter && (entry.keyId || '') !== keyFilter) return false;
+    const time = logEntryTime(entry);
+    if (startTime !== null && Number.isFinite(time) && time < startTime) return false;
+    if (endTime !== null && Number.isFinite(time) && time > endTime) return false;
+    if (needle && !logEntrySearchText(entry).includes(needle)) return false;
+    return true;
+  });
+}
+
+// 按关键字 / Key / 时间段搜索请求日志，分页口径与 getLogs 一致（最新在前）。
+function searchLogs({ keyword, keyId, from, to, limit, offset } = {}) {
+  const filtered = filterRequestLog(logs, { keyword, keyId, from, to });
+  const normalizedLimit = normalizeLimit(limit);
+  const normalizedOffset = normalizeOffset(offset);
+  const slice = filtered.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+  return {
+    items: slice.map(cloneLog),
+    limit: normalizedLimit,
+    offset: normalizedOffset,
+    total: filtered.length,
+    hasMore: normalizedOffset + slice.length < filtered.length,
+    maxLogs: MAX_LOGS,
+    filters: {
+      keyword: normalizeKeyword(keyword),
+      keyId: keyId === undefined || keyId === null ? null : String(keyId),
+      from: hasFromValue(from) ? new Date(Date.parse(String(from))).toISOString() : null,
+      to: hasFromValue(to) ? new Date(Date.parse(String(to))).toISOString() : null
+    }
+  };
+}
+
+function hasFromValue(value) {
+  return value !== undefined && value !== null && value !== '' && Number.isFinite(Date.parse(String(value)));
+}
+
+// 供日志筛选下拉框使用：近期日志里出现过的 Key 及其请求次数。
+function listLogKeys() {
+  const map = new Map();
+  for (const entry of logs) {
+    if (!entry.keyId) continue;
+    if (!map.has(entry.keyId)) {
+      map.set(entry.keyId, { keyId: entry.keyId, keyName: entry.keyName || '', requests: 0 });
+    }
+    const item = map.get(entry.keyId);
+    item.requests += 1;
+    if (!item.keyName && entry.keyName) item.keyName = entry.keyName;
+  }
+  return Array.from(map.values()).sort((a, b) => b.requests - a.requests || a.keyId.localeCompare(b.keyId));
+}
+
 function getAllLogs() {
   return logs.slice().reverse().map(cloneLog);
 }
@@ -414,6 +515,8 @@ module.exports = {
   recordRequest,
   getMetrics,
   getLogs,
+  searchLogs,
+  listLogKeys,
   getAllLogs,
   getRangeStats,
   importUsageRecords,

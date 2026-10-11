@@ -44,6 +44,7 @@ npm.cmd test
 | `test/model-selection.integration.test.js` | 集成 | 模型选择保存、`upstreamIds` 轮询池、固定站、旧备份合并迁移 |
 | `test/model-case.integration.test.js` | 集成 | 模型名/中转站大小写合并、按各站拼写转发、重复选择拒绝、备份导入合并 |
 | `test/metrics-range.integration.test.js` | 集成 | `/api/admin/metrics/range` 参数校验、闭区间命中、范围与全量统计互不影响 |
+| `test/log-search.integration.test.js` | 集成 | 内容摘要入日志、按关键字 / Key / 时间段搜索 `/api/admin/metrics/logs`、Key 列表脱敏、非法时间参数 400 |
 | `test/integration-auth.test.js` | 集成 | 接入授权 verify/revoke/status、令牌哈希、Key 删除级联取消、备份导入保留 |
 接入方刷新配置（`GET /api/integration/config`，Key 或令牌认证）与管理员视图/取消（`/api/admin/integrations`）也在其中。
 | `test/release-notes.test.js` | 单元 | 更新日志 Markdown 渲染：标题/列表/引用/代码块、链接协议白名单、注入转义 |

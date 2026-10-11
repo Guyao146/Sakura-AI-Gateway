@@ -96,6 +96,47 @@ function main() {
   stamped('req_range_edge_start', '2026-10-02T00:00:00Z', 'range-a', { attempts: [{ upstream: 'range-a', status: 200 }] });
   stamped('req_range_edge_end', '2026-10-02T23:59:59Z', 'range-b', { attempts: [{ upstream: 'range-b', status: 200 }] });
 
+  // 内容摘要与按 Key / 关键字 / 时间段的日志搜索。
+  const digested = recordRequest({
+    id: 'req_search_target',
+    model: 'search-model',
+    upstream: 'search-upstream',
+    status: 200,
+    success: true,
+    keyId: 'key-search',
+    keyName: '搜索测试 Key',
+    contentDigest: '  帮我写一段\n快速排序算法  ',
+    finishedAt: '2026-11-01T06:00:00Z',
+    startedAt: '2026-11-01T06:00:00Z',
+    attempts: [{ upstream: 'search-upstream', status: 200 }]
+  });
+  assert.equal(digested.contentDigest, '帮我写一段\n快速排序算法', '内容摘要去除首尾空白并保留内部换行');
+  const longDigest = recordRequest({ id: 'req_search_long', model: 'search-model', status: 200, success: true, contentDigest: '词'.repeat(800) });
+  assert.equal(longDigest.contentDigest.length, 500, '内容摘要截断到 500 字符');
+  const noDigest = recordRequest({ id: 'req_search_plain', model: 'search-model', status: 200, success: true, keyId: 'key-other' });
+  assert.equal('contentDigest' in noDigest, false, '没有用户内容的请求不记录摘要字段');
+
+  const { searchLogs, listLogKeys } = require('../src/metrics');
+  const byContent = searchLogs({ keyword: '快速排序' });
+  assert.equal(byContent.total, 1, '按内容关键字命中一条');
+  assert.equal(byContent.items[0].id, 'req_search_target');
+  const byKey = searchLogs({ keyId: 'key-search' });
+  assert.equal(byKey.total, 1, '按 Key 命中一条');
+  const byModel = searchLogs({ keyword: 'search-model' });
+  assert.equal(byModel.total, 3, '按模型名命中全部记录');
+  const byTime = searchLogs({ from: '2026-11-01T05:00:00Z', to: '2026-11-01T07:00:00Z' });
+  assert.equal(byTime.total, 1, '按时间段命中目标记录');
+  const combined = searchLogs({ keyword: '快速排序', keyId: 'key-search', from: '2026-11-01T00:00:00Z', to: '2026-11-01T23:59:59Z' });
+  assert.equal(combined.total, 1, '组合筛选应命中目标记录');
+  const notFound = searchLogs({ keyword: '不存在的内容' });
+  assert.equal(notFound.total, 0, '无匹配时返回空结果');
+  const keys = listLogKeys();
+  const searchKey = keys.find((item) => item.keyId === 'key-search');
+  assert.ok(searchKey && searchKey.keyName === '搜索测试 Key', 'Key 列表应包含 keyName');
+  assert.ok(searchKey.requests >= 1, 'Key 列表应累计请求次数');
+  assert.throws(() => searchLogs({ from: 'not-a-date', to: '2026-11-01T00:00:00Z' }), /日志筛选的开始时间无效/);
+  assert.throws(() => searchLogs({ from: '2026-11-02T00:00:00Z', to: '2026-11-01T00:00:00Z' }), /开始时间不能晚于结束时间/);
+
   const singleDay = getRangeStats({ from: '2026-10-02T00:00:00Z', to: '2026-10-02T23:59:59Z' });
   assert.equal(singleDay.matched, 3, '闭区间应包含起止边界');
   assert.equal(singleDay.totals.requests, 3);

@@ -173,6 +173,44 @@ async function main() {
     await evaluate('refreshMetrics()');
     assert.equal(await evaluate('document.querySelector("#statsGrid").getAnimations({subtree:true}).length'), 0, '自动刷新不能重播卡片动画');
     await screenshot('metrics-desktop');
+    await evaluate('switchTab("logs")');
+    await waitFor(settled);
+    assert.equal(await evaluate('document.querySelectorAll("#logSearchInput").length'), 1, '日志筛选栏应存在搜索框');
+    assert.equal(await evaluate('document.querySelectorAll("#logKeyFilter").length'), 1, '日志筛选栏应存在 Key 下拉框');
+    assert.equal(await evaluate('document.querySelectorAll("#logRangeFrom").length'), 1, '日志筛选栏应存在开始时间');
+    assert.equal(await evaluate('document.querySelectorAll("#logRangeTo").length'), 1, '日志筛选栏应存在结束时间');
+    assert.equal(await evaluate('document.querySelector("#requestLogSummary").textContent'), '仅记录元数据', '空日志时应显示占位文案');
+    await evaluate('document.querySelector("#logSearchInput").value = "不存在的关键字"; document.querySelector("#logSearchInput").dispatchEvent(new Event("input"))');
+    // 输入后有 300ms 防抖 + 一次后端请求，等待摘要真正更新再断言。
+    await waitFor('document.querySelector("#requestLogSummary").textContent.includes("筛选")');
+    const summaryText = await evaluate('document.querySelector("#requestLogSummary").textContent');
+    assert.match(summaryText, /筛选：关键字/, `摘要应显示当前筛选条件，实际：${summaryText}`);
+    await evaluate('document.querySelector("#resetLogFilterButton").click()');
+    await waitFor('document.querySelector("#logSearchInput").value === ""');
+    assert.equal(await evaluate('document.querySelector("#logSearchInput").value'), '', '重置应清空搜索框');
+    await screenshot('logs-filter-bar', '.panel[data-tab-page="logs"]');
+    // 全屏宽度：不再有 1360px 上限，只保留两侧呼吸边距。
+    // 全屏宽度：不再有 1360px 上限，1440px 视口下 shell 应明显超过旧上限（减去滚动条宽度误差）。
+    assert.ok(await evaluate('document.querySelector(".shell").getBoundingClientRect().width > 1360'), '桌面端页面应铺满全宽');
+    // 日志表格应有竖向滚动区域与粘性表头。
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".request-log-table")).overflowY'), 'auto', '日志表格应有竖向滚动');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".request-log-table thead th")).position'), 'sticky', '日志表头应吸顶');
+    // 内容可选择复制：面板与卡片默认不带 draggable，只有手柄按下时才启用。
+    assert.equal(await evaluate('document.querySelector("[data-panel-id]").draggable'), false, '面板默认应不可拖拽以保证内容可选中复制');
+    assert.equal(await evaluate('getComputedStyle(document.body).userSelect'), 'text', '页面正文应允许文本选择');
+    // 拖拽排序仍可用：只有按住 ⋮⋮ 手柄才能拖动面板，且松手后恢复 draggable=false。
+    await evaluate('switchTab("overview")');
+    await waitFor(settled);
+    // 面板按标签页显隐，拖拽要在当前可见的两个面板之间进行。
+    // 无头 Chrome 的 CDP Input 不触发 HTML5 拖拽，所以用合成 DragEvent 走完整 dragstart/dragover/drop/dragend 流程。
+    await waitFor('[...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")].length >= 2');
+    const otherId = await evaluate('[...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")][1].dataset.panelId');
+    const before = await evaluate('JSON.stringify([...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")].map(panel => panel.dataset.panelId))');
+    await evaluate('(() => { const panels = [...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")]; const handle = panels[0].querySelector("[data-panel-drag-handle]"); const dataTransfer = new DataTransfer(); handle.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); panels[0].dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer })); const target = panels[1]; const rect = target.getBoundingClientRect(); target.dispatchEvent(new DragEvent("dragover", { bubbles: true, clientY: rect.bottom - 20, dataTransfer })); target.dispatchEvent(new DragEvent("drop", { bubbles: true, clientY: rect.bottom - 20, dataTransfer })); panels[0].dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer })); return true; })()');
+    await waitFor('JSON.stringify([...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")].map(panel => panel.dataset.panelId)) !== ' + JSON.stringify(before));
+    const movedId = await evaluate('[...document.querySelectorAll("#dashboard > [data-panel-id]:not(.hidden)")][0].dataset.panelId');
+    assert.equal(movedId, otherId, '手柄拖拽应能交换面板顺序');
+    assert.equal(await evaluate('document.querySelector("#dashboard > [data-panel-id]").draggable'), false, '拖拽结束后面板应恢复为不可拖拽');
     await evaluate('switchTab("overview")');
     await waitFor(settled);
     await screenshot('dashboard-desktop');

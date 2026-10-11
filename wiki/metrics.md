@@ -37,6 +37,9 @@
   "startedAt": "ISO 时间",
   "finishedAt": "ISO 时间",
   "protocol": "openai | anthropic | responses",
+  "keyId": "调用的本地 API Key ID",
+  "keyName": "Key 名称",
+  "contentDigest": "最后一条用户消息的截断文本",
   "upstream": "最终上游名",
   "upstreamModel": "上游模型名",
   "status": 200,              // 最终 HTTP 状态码
@@ -51,7 +54,11 @@
 }
 ```
 
-日志只含脱敏元数据与 token 数字，**不含请求内容或密钥**。
+日志含元数据、token 数字与**内容摘要**，但**不含完整请求正文、请求头、API Key 或上游完整地址**。
+
+- `keyId` / `keyName` 标识发起请求的本地 API Key（用于按 Key 筛选），日志与接口响应都不会返回 Key 本身。
+- `contentDigest` 是客户端最后一条用户消息的截断文本（空白折叠，上限 500 字符），用于在请求日志里检索历史提问；
+  它是从请求体提取的摘要，不是完整对话记录。
 
 - `error` 是给客户端看的错误信息原文；`upstreamError` 记录上游**实际返回**的结构化错误，
   含 HTTP `status` 与上游提供的 `code` / `type` / `param` / `message`（缺失的字段不出现），
@@ -62,6 +69,18 @@
 
 管理页面可将最近 100 条记录或当前日志上限内的全部记录导出为 JSON。导出内容包含
 聚合 totals、byUpstream 和 records 明细；`records` 按时间正序排列，便于归档或分析。
+
+## 请求日志搜索与筛选
+
+管理页面「请求日志」提供组合筛选：
+
+- **关键字**：匹配请求 ID、模型、上游模型、上游名、Key 名称、错误信息、内容摘要以及每次尝试的上游错误码，大小写不敏感。
+- **本地 Key**：下拉框列出近期日志中出现过的 Key（从管理接口 `/api/admin/metrics/keys` 获取），只显示 Key 名称与请求次数。
+- **时间段**：闭区间筛选，空值表示不限制。
+
+搜索框输入后防抖 300ms 再请求；筛选结果与「加载更多」分页共用同一筛选条件。
+对应后端接口为 `GET /api/admin/metrics/logs?keyword=&keyId=&from=&to=&offset=&limit=`，
+返回 `{items, limit, offset, total, hasMore, maxLogs, filters}`，`filters` 回传规范化后的实际筛选条件。
 
 ## 日志上限与压实
 
