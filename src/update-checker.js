@@ -1,5 +1,7 @@
 const UPDATE_REPOSITORY = 'Guyao146/Sakura-AI-Gateway';
 const GITHUB_RELEASES_URL = `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases`;
+const DEFAULT_LIST_LIMIT = 6;
+const MAX_LIST_LIMIT = 20;
 
 function versionParts(value) {
   const match = String(value || '').trim().replace(/^v/i, '').match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -46,6 +48,8 @@ function isUpgradeArchive(asset, version) {
 
 async function checkLatestRelease(currentVersion, options = {}) {
   const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 8000, 30000));
+  const requestedLimit = Number(options.listLimit) || DEFAULT_LIST_LIMIT;
+  const listLimit = Math.max(1, Math.min(Math.trunc(requestedLimit), MAX_LIST_LIMIT));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -55,15 +59,19 @@ async function checkLatestRelease(currentVersion, options = {}) {
     });
     if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
     const releases = await response.json();
-    const latest = Array.isArray(releases)
-      ? releases.map(releaseToPublic).filter(Boolean).find((release) => !release.prerelease)
-      : null;
+    const publicReleases = Array.isArray(releases) ? releases.map(releaseToPublic).filter(Boolean) : [];
+    const stable = publicReleases.filter((release) => !release.prerelease);
+    const latest = stable[0] || null;
     if (!latest) throw new Error('GitHub 暂无可用 Release');
     return {
       repository: UPDATE_REPOSITORY,
       checkedAt: new Date().toISOString(),
       currentVersion: String(currentVersion || ''),
       latest,
+      releases: stable.slice(0, listLimit).map((release) => ({
+        ...release,
+        isCurrent: compareVersions(release.version, currentVersion) === 0
+      })),
       upgradeAsset: latest.assets.find((asset) => isUpgradeArchive(asset, latest.version)) || null,
       updateAvailable: compareVersions(latest.version, currentVersion) > 0
     };

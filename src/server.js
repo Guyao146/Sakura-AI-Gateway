@@ -2744,7 +2744,7 @@ function importConfig(rawConfig, preserveCredentials = true) {
 
 function serveStatic(res, pathname, fileOverride = '') {
   const fileName = fileOverride || (pathname === '/' ? 'index.html' : pathname.slice(1));
-  if (!['index.html', 'login.html', 'login.js', 'app.js', 'model-groups.js', 'key-access.js', 'styles.css'].includes(fileName)) {
+  if (!['index.html', 'login.html', 'login.js', 'app.js', 'model-groups.js', 'key-access.js', 'release-notes.js', 'styles.css'].includes(fileName)) {
     sendText(res, 404, 'Not found');
     return;
   }
@@ -2753,7 +2753,7 @@ function serveStatic(res, pathname, fileOverride = '') {
     sendText(res, 404, 'Not found');
     return;
   }
-  const types = { 'index.html': 'text/html; charset=utf-8', 'login.html': 'text/html; charset=utf-8', 'login.js': 'application/javascript; charset=utf-8', 'app.js': 'application/javascript; charset=utf-8', 'model-groups.js': 'application/javascript; charset=utf-8', 'key-access.js': 'application/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
+  const types = { 'index.html': 'text/html; charset=utf-8', 'login.html': 'text/html; charset=utf-8', 'login.js': 'application/javascript; charset=utf-8', 'app.js': 'application/javascript; charset=utf-8', 'model-groups.js': 'application/javascript; charset=utf-8', 'key-access.js': 'application/javascript; charset=utf-8', 'release-notes.js': 'application/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
   sendText(res, 200, fs.readFileSync(filePath, 'utf8'), types[fileName]);
 }
 
@@ -2766,7 +2766,9 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/admin/update-check') {
     try {
-      sendJson(res, 200, await checkLatestRelease(APP_VERSION));
+      const query = new URL(req.url, `http://${req.headers.host || 'localhost'}`).searchParams;
+      const limit = Number(query.get('limit')) || 0;
+      sendJson(res, 200, await checkLatestRelease(APP_VERSION, limit ? { listLimit: limit } : {}));
     } catch (error) {
       sendJson(res, 502, { error: { message: `检查更新失败：${error.message}` } });
     }

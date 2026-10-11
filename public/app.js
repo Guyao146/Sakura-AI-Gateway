@@ -18,6 +18,7 @@ state.activeTab = 'overview';
 const $ = (selector) => document.querySelector(selector);
 const { groupModelsByPrefix, mergeModelsById, modelGroupKey, modelPrefix, pooledUpstreamIds, setUnifiedModelsSelected, unifiedModelSelectionKey } = window.ModelGroups;
 const { normalizeKeyAccess, keyAccessModels } = window.KeyAccess;
+const { renderReleaseNotes } = window.ReleaseNotes;
 const PANEL_ORDER_KEY = 'sakura-ai-gateway.panel-order.v1';
 const ACTIVE_TAB_KEY = 'sakura-ai-gateway.active-tab.v2';
 
@@ -180,15 +181,46 @@ function renderUpdateStatus(result) {
   $('#currentVersion').textContent = current;
   const message = $('#updateMessage');
   const details = $('#updateDetails');
-  if (!result) { message.textContent = '尚未检查'; details.classList.add('hidden'); return; }
+  if (!result) {
+    message.textContent = '尚未检查';
+    message.className = 'muted';
+    details.classList.add('hidden');
+    $('#releaseNotesList')?.classList.add('hidden');
+    return;
+  }
   message.textContent = result.updateAvailable ? `发现新版本：${result.latest.version}` : `已是最新版本（检查于 ${formatTime(result.checkedAt)}）`;
   message.className = result.updateAvailable ? 'success-text' : 'muted';
   if (result.updateAvailable) {
-    const autoButton = result.upgradeAsset ? '<button type="button" id="autoUpdateButton" class="button primary">自动升级</button>' : '';
-    details.innerHTML = `<strong>${escapeHtml(result.latest.name)}</strong><span>发布时间：${escapeHtml(formatTime(result.latest.publishedAt))}</span><p>${escapeHtml(result.latest.body || '该版本没有发布说明。')}</p><div class="update-actions">${autoButton}<a class="button secondary" href="${escapeHtml(result.latest.url)}" target="_blank" rel="noopener noreferrer">打开 GitHub Release</a></div>`;
+    details.innerHTML = `<strong>${escapeHtml(result.latest.name)}</strong><span>发布时间：${escapeHtml(formatTime(result.latest.publishedAt))}</span><div class="update-actions"><a class="button secondary" href="${escapeHtml(result.latest.url)}" target="_blank" rel="noopener noreferrer">打开 GitHub Release</a></div>`;
     details.classList.remove('hidden');
-    $('#autoUpdateButton')?.addEventListener('click', startAutoUpdate);
   } else details.classList.add('hidden');
+  renderReleaseList(result);
+}
+
+// 更新日志列表：每个稳定版一条，最新版在顶部并带版本徽章与自动升级按钮。
+function renderReleaseList(result) {
+  const container = $('#releaseNotesList');
+  if (!container) return;
+  const releases = Array.isArray(result?.releases) ? result.releases : [];
+  if (!releases.length) { container.classList.add('hidden'); container.innerHTML = ''; return; }
+  const latestVersion = result.latest?.version || '';
+  const canUpgrade = Boolean(result.updateAvailable && result.upgradeAsset);
+  const items = releases.map((release) => {
+    const badge = release.isCurrent
+      ? '<span class="version-badge current">当前版本</span>'
+      : (release.version === latestVersion ? '<span class="version-badge latest">新版本</span>' : '');
+    const upgradeButton = canUpgrade && release.version === latestVersion
+      ? '<button type="button" id="autoUpdateButton" class="button primary">自动升级</button>' : '';
+    const assets = release.assets.map((asset) => `<a class="button secondary" href="${escapeHtml(asset.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(asset.name)}</a>`).join('');
+    return `<article class="release-note">
+      <header class="release-note-header"><code class="release-version">v${escapeHtml(release.version)}</code>${badge}<span class="release-name">${escapeHtml(release.name)}</span><span class="release-date muted">${escapeHtml(formatTime(release.publishedAt))}</span></header>
+      <div class="markdown-body">${renderReleaseNotes(release.body) || '<p class="muted">该版本没有发布说明。</p>'}</div>
+      ${upgradeButton || assets ? `<div class="update-actions">${upgradeButton}${assets}</div>` : ''}
+    </article>`;
+  });
+  container.innerHTML = items.join('');
+  container.classList.remove('hidden');
+  $('#autoUpdateButton')?.addEventListener('click', startAutoUpdate);
 }
 
 async function startAutoUpdate() {
@@ -214,11 +246,34 @@ async function checkForUpdates() {
     state.update = result;
     renderUpdateStatus(result);
     toast(result.updateAvailable ? `发现新版本 ${result.latest.version}` : '当前已是最新版本');
+    return result;
   } catch (error) {
     $('#updateMessage').textContent = error.message;
     $('#updateMessage').className = 'error-text';
     toast(error.message, 'error');
+    return null;
   } finally { button.disabled = false; button.textContent = '检查更新'; }
+}
+
+// 更新日志：10 分钟内的检查结果直接展示，否则重新拉取。
+async function viewChangelog() {
+  const button = $('#viewChangelogButton');
+  if (!button) return;
+  button.disabled = true;
+  button.textContent = '加载中…';
+  try {
+    const checkedAt = state.update?.checkedAt ? Date.parse(state.update.checkedAt) : 0;
+    const fresh = checkedAt && (Date.now() - checkedAt) < 10 * 60 * 1000 && Array.isArray(state.update.releases);
+    if (!fresh) await checkForUpdates();
+    else {
+      renderUpdateStatus(state.update);
+      toast('展示最近版本的更新日志');
+    }
+    const first = $('#releaseNotesList .release-note');
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally { button.disabled = false; button.textContent = '更新日志'; }
 }
 
 const CARD_ORDER_KEY = 'sakura-ai-gateway.card-order.v1';
@@ -1586,6 +1641,7 @@ $('#usageFileInput').addEventListener('change', async (event) => {
   event.target.value = '';
 });
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
+$('#viewChangelogButton')?.addEventListener('click', viewChangelog);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#probeThinkingButton').addEventListener('click', probeAllThinking);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);

@@ -9,7 +9,7 @@
     <RootNamespace>SakuraAIGateway.WebView2</RootNamespace>
     <Product>Sakura-AI-Gateway</Product>
     <Title>Sakura-AI-Gateway · Edge WebView2</Title>
-    <Version>2.6.0</Version>
+    <Version>2.7.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

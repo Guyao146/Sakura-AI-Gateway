@@ -239,6 +239,32 @@ tr:last-child td { border-bottom: 0; }
 .update-details p { white-space: pre-wrap; color: var(--muted); }
 .update-details a { justify-self: start; text-decoration: none; }
 .update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.release-notes-list { display: grid; gap: 12px; margin-top: 14px; }
+.release-note { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: rgba(25, 63, 45, .18); }
+.release-note-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.release-version { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; color: var(--accent); }
+.release-name { color: var(--text); }
+.release-date { margin-left: auto; }
+.version-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.version-badge.current { background: rgba(155, 229, 189, .14); color: var(--accent); border: 1px solid rgba(155, 229, 189, .4); }
+.version-badge.latest { background: rgba(255, 191, 105, .12); color: #ffbf69; border: 1px solid rgba(255, 191, 105, .45); }
+.markdown-body { margin-top: 8px; font-size: 12.5px; line-height: 1.6; color: var(--text); }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 10px 0 6px; line-height: 1.35; }
+.markdown-body h1 { font-size: 16px; }
+.markdown-body h2 { font-size: 14.5px; }
+.markdown-body h3 { font-size: 13px; color: var(--accent); }
+.markdown-body p { margin: 6px 0; color: var(--muted); }
+.markdown-body ul, .markdown-body ol { margin: 6px 0 6px 20px; padding: 0; }
+.markdown-body li { margin: 3px 0; }
+.markdown-body blockquote { margin: 8px 0; padding: 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
+.markdown-body pre { margin: 8px 0; padding: 10px; background: rgba(0, 0, 0, .32); border-radius: 6px; overflow-x: auto; }
+.markdown-body pre code { color: var(--text); }
+.markdown-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--accent); }
+.markdown-body a { color: var(--accent); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+.markdown-body hr { margin: 10px 0; border: none; border-top: 1px solid var(--border); }
+.markdown-body strong { color: var(--text); }
 /* Visibility utilities must win over later component display rules. */
 .hidden { display: none !important; }
 dialog { width: min(520px, calc(100% - 28px)); padding: 0; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); color: var(--text); box-shadow: 0 25px 90px #000b; }

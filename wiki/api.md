@@ -233,6 +233,23 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 ---
 
+## 版本与升级接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/admin/update-check?limit=6` | 检查最新版本并拉取最近版本的更新日志 |
+| POST | `/api/admin/update` | 自动升级：下载带 SHA-256 校验的网关升级包并重启 |
+
+- `update-check` 返回 `{ repository, checkedAt, currentVersion, latest, releases, upgradeAsset, updateAvailable }`。
+  `latest` 为最新的非预发布版本；`releases` 为最近的稳定版列表（默认 6 条，`limit` 最大 20），
+  每条含 `version`、`name`、`body`（Markdown 更新日志）、`publishedAt`、`assets`、`isCurrent`（是否当前版本）。
+- 自动升级仅信任 `github.com` / `*.githubusercontent.com` 的 https 下载地址，且要求升级包带
+  SHA-256 校验（资产名形如 `Sakura-AI-Gateway-v<版本>.tar.gz`）；升级时 `data/` 配置保留，服务短暂重启。
+- 前端「版本与升级」面板提供「检查更新」与「更新日志」按钮，更新日志按 Markdown 渲染，
+  最近 10 分钟内的检查结果会直接复用，避免重复请求 GitHub。
+
+---
+
 ## 认证与健康接口
 
 | 方法 | 路径 | 说明 |
