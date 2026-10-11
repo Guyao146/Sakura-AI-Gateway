@@ -451,3 +451,7 @@ Sakura-AI-Gateway 采用 [Sakura-License](LICENSE)：源码可用，受覆盖衍
 
 - `v2.4.0` 及之前的历史发布版本仍按 `LGPL-2.1` 授权，已合法取得的权利不受影响。
 - `wiki/assets/marked.min.js` 为第三方 MIT 作品，保留其原许可，不属于本许可覆盖范围。
+
+## 社区
+
+本项目已在 "LinuxDo - 新的理想型社区" 公开发布
