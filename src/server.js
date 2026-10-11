@@ -51,7 +51,8 @@ const {
   normalizeIntegration,
   integrationPublic,
   integrationErrorBody,
-  buildVerifyResponse
+  buildVerifyResponse,
+  buildConfigResponse
 } = require('./integration');
 const {
   errorMessage,
@@ -2042,6 +2043,33 @@ async function handleIntegration(req, res, pathname) {
     });
     return;
   }
+  // 接入方在已建立连接后刷新配置：可用接入令牌或本地 API Key 认证。
+  if (pathname === '/api/integration/config' && req.method === 'GET') {
+    const token = getApiToken(req);
+    let key = null;
+    let integration = findIntegrationByToken(token);
+    if (integration) {
+      if (integration.status === 'cancelled') {
+        sendJson(res, 403, integrationErrorBody('authorization_cancelled', '授权已取消，不能再用于拉取配置', { authorization: integrationPublic(integration) }));
+        return;
+      }
+      key = config.localApiKeys.find((item) => item.id === integration.sourceKeyId && item.enabled !== false) || null;
+      if (!key) {
+        recordIntegrationFailure(integration, '本地 API Key 无效或已停用');
+        saveConfig(config);
+        sendJson(res, 401, integrationErrorBody('unauthorized', '该授权对应的本地 API Key 无效或已停用'));
+        return;
+      }
+    } else {
+      key = findLocalKey(token);
+      if (!key) {
+        sendJson(res, 401, integrationErrorBody('unauthorized', 'API Key 无效或该 Key 已停用'));
+        return;
+      }
+    }
+    sendJson(res, 200, buildConfigResponse({ key, models: accessibleModelsForKey(key) }));
+    return;
+  }
   sendJson(res, 404, integrationErrorBody('not_found', '未找到该接入接口'));
 }
 
@@ -2812,6 +2840,33 @@ async function handleAdmin(req, res, pathname) {
     sendJson(res, 200, publicModelCatalog());
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/admin/integrations') {
+    const integrations = (config.integrations || []).map((item) => {
+      const key = config.localApiKeys.find((candidate) => candidate.id === item.sourceKeyId) || null;
+      return { ...integrationPublic(item), sourceKey: key ? { id: key.id, name: key.name, enabled: key.enabled !== false } : null };
+    });
+    sendJson(res, 200, { integrations });
+    return;
+  }
+  if (req.method === 'POST' && pathname.startsWith('/api/admin/integrations/') && pathname.endsWith('/revoke')) {
+    const id = decodeURIComponent(pathname.slice('/api/admin/integrations/'.length, -'/revoke'.length));
+    const integration = (config.integrations || []).find((item) => item.id === id);
+    if (!integration) {
+      sendJson(res, 404, { error: { message: '接入授权记录不存在' } });
+      return;
+    }
+    if (integration.status === 'cancelled') {
+      sendJson(res, 200, { revoked: true, alreadyCancelled: true, authorization: integrationPublic(integration) });
+      return;
+    }
+    integration.status = 'cancelled';
+    integration.cancelledAt = nowIso();
+    integration.lastFailureReason = '管理员手动取消';
+    saveConfig(config);
+    log('接入授权已被管理员取消', { integrationId: integration.id, label: integration.label, ...sourceDiagnostics(req) });
+    sendJson(res, 200, { revoked: true, authorization: integrationPublic(integration) });
+    return;
+  }
   if (req.method === 'POST' && pathname === '/api/admin/model-catalog/capabilities') {
     const body = await readBody(req);
     const upstream = config.upstreams.find((item) => item.id === body.upstreamId);
@@ -3235,7 +3290,7 @@ async function requestHandler(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname;
   if (pathname === '/health') {
-    sendJson(res, 200, { status: 'ok', service: 'sakura-ai-gateway', time: nowIso() });
+    sendJson(res, 200, { status: 'ok', service: 'sakura-ai-gateway', version: APP_VERSION, time: nowIso() });
     return;
   }
   if (pathname === '/auth/status' && req.method === 'GET') {

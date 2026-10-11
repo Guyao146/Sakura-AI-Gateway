@@ -221,15 +221,36 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/integration/verify` | 校验本地 API Key 并登记接入；成功返回一次性明文令牌 |
+| POST | `/api/integration/verify` | 外部项目填网关地址 + 本地 Key：校验权限、登记接入、拉取模型配置 |
+| GET | `/api/integration/config` | 已接入后刷新配置：可用接入令牌或本地 API Key 认证 |
 | POST | `/api/integration/revoke` | 凭令牌自助注销接入 |
-| GET | `/api/integration/status` | 管理员查看接入列表（只含哈希，无明文） |
+| GET | `/api/integration/status` | 接入方凭令牌查看自己的授权状态（只含哈希，无明文） |
 
-- `verify` 的 body 为 `{ apiKey, label? }`；`apiKey` 必须是网关本地已启用且有权访问至少一个模型的 Key。
-  成功返回 `{ authorization: { id, token, label, createdAt, expiresAt? } }`，**明文令牌只出现这一次**，落盘只存 SHA-256。
+接入流程：外部项目把用户填写的地址作为根（如 `https://gateway.example.com`），调用
+`POST {根地址}/api/integration/verify`，body 为 `{ apiKey, label? }`。`apiKey` 必须是网关本地已启用且
+有权访问至少一个模型的 Key。响应里的 `authorization.token` **明文只出现一次**，落盘只存 SHA-256；
+`models` 是按该 Key 权限过滤后的本地模型列表（含思考能力），`endpoints` 给出可用的相对路径。
+
+```json
+{
+  "verified": true,
+  "gateway": { "service": "sakura-ai-gateway", "version": "2.7.0" },
+  "authorization": { "id": "int_...", "token": "sakura-int_...", "label": "我的插件", "status": "active" },
+  "apiKey": { "id": "key_...", "name": "默认本地 Key", "modelAccessMode": "all", "allowedGroups": [], "allowedModels": [] },
+  "endpoints": { "openai": { "models": "/v1/models", "chat": "/v1/chat/completions", "responses": "/v1/responses" }, "anthropic": { "messages": "/v1/messages" } },
+  "models": [{ "id": "gpt-4o", "supportsThinking": false, "thinkingLevels": [] }],
+  "modelsCount": 1,
+  "nextSteps": ["保存令牌明文…", "用 Authorization: Bearer <API Key> 调用模型接口…", "GET /api/integration/config 刷新配置"]
+}
+```
+
+- `config` 供接入方后续刷新模型列表：请求头携带 `Authorization: Bearer <接入令牌>` 或 `Authorization: Bearer <API Key>`；
+  返回同样的 `models`/`apiKey`/`endpoints` 视图，不含令牌。已取消的授权返回 403。
 - `revoke` 由接入方凭令牌自助调用，无需管理员；删除来源本地 Key 会级联取消其全部接入。
 - 三个接口按来源 IP 限流（每分钟 60 次），超限返回 429。
-- 登记随配置持久化（`config.integrations`），备份导出包含哈希记录；`status` 与导出均无明文。
+- 登记随配置持久化（`config.integrations`），备份导出包含哈希记录；响应与导出均无明文。
+- 管理员可在后台「本地调用 Key」标签页的「第三方接入授权」面板查看全部接入并手动取消，
+  或调用 `GET /api/admin/integrations` / `POST /api/admin/integrations/:id/revoke`。
 
 ---
 
@@ -254,7 +275,7 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查：`{status:'ok', service:'sakura-ai-gateway', time}` |
+| GET | `/health` | 健康检查（公开）：`{status:'ok', service:'sakura-ai-gateway', version, time}`；外部项目可用它确认地址是否指向本网关 |
 | GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, remoteMode, oidcConfigured, passwordConfigured, user}` |
 | GET | `/auth/login` | 登录页；按 `remoteMode` 显示 Authentik 登录或账号密码表单 |
 | POST | `/auth/password/login` | 本地账号密码登录，body 为 `{ username, password }`；成功返回会话 Cookie |

@@ -45,6 +45,7 @@ npm.cmd test
 | `test/model-case.integration.test.js` | 集成 | 模型名/中转站大小写合并、按各站拼写转发、重复选择拒绝、备份导入合并 |
 | `test/metrics-range.integration.test.js` | 集成 | `/api/admin/metrics/range` 参数校验、闭区间命中、范围与全量统计互不影响 |
 | `test/integration-auth.test.js` | 集成 | 接入授权 verify/revoke/status、令牌哈希、Key 删除级联取消、备份导入保留 |
+接入方刷新配置（`GET /api/integration/config`，Key 或令牌认证）与管理员视图/取消（`/api/admin/integrations`）也在其中。
 | `test/release-notes.test.js` | 单元 | 更新日志 Markdown 渲染：标题/列表/引用/代码块、链接协议白名单、注入转义 |
 
 集成测试模式：

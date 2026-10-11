@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v2.7.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v2.8.0</strong></div>
       </aside>
 
       <div class="content">
@@ -97,6 +97,15 @@
         </div>
         <p class="help">本地 APP 调用时使用这里的 Key。新建或编辑时可设置允许的分组，并逐个勾选组内模型；未授权模型不会展示且调用返回 403。旧 Key 默认不限制。完整 Key 可直接查看和复制；请求头可用 <code>Authorization: Bearer ...</code> 或 <code>x-api-key: ...</code>。</p>
         <div id="keyList" class="key-list"></div>
+      </section>
+
+          <section class="panel dashboard-card" data-panel-id="integrations" data-tab-page="keys">
+        <div class="panel-heading">
+          <div><h2>第三方接入授权</h2></div>
+          <button id="refreshIntegrationsButton" class="button secondary">刷新</button>
+        </div>
+        <p class="help">外部软件在接入界面填入本网关地址和本地调用 Key，调用 <code>POST /api/integration/verify</code> 即可自动验证权限并拉取模型配置；需要刷新时调用 <code>GET /api/integration/config</code>。接入令牌只显示一次，删除来源 Key 会自动取消其全部接入。已接入的软件仍可正常调用 <code>/v1/*</code> 模型接口。</p>
+        <div id="integrationList" class="key-list"></div>
       </section>
 
           <section class="panel settings-panel dashboard-card" data-panel-id="adminAuth" data-tab-page="adminAuth">

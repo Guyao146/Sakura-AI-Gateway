@@ -6,6 +6,7 @@ const state = {
   catalog: null,
   adminAuth: null,
   expandedPrefixes: new Set(),
+ integrations: null,
   modelSelectionDraft: null,
   logPage: null,
   loadingMoreLogs: false,
@@ -110,6 +111,9 @@ function switchTab(tab) {
   // 仅在面板已解锁时加载，避免页面初始恢复标签时触发未认证请求。
   if (target === 'logs' && !$('#dashboard').classList.contains('hidden') && typeof refreshRequestLogs === 'function') {
     refreshRequestLogs();
+  }
+  if (target === 'keys' && !$('#dashboard').classList.contains('hidden') && typeof loadIntegrations === 'function') {
+    loadIntegrations();
   }
 }
 
@@ -914,6 +918,7 @@ async function loadConfig() {
     } catch {
       state.adminAuth = null;
     }
+    try { await loadIntegrations(); } catch { /* 接入列表失败不阻塞面板 */ }
     $('#dashboard').classList.remove('hidden');
     setMessage('');
     fillDefaultRangeInputs();
@@ -1312,12 +1317,55 @@ async function copyLocalKey(item) {
   }
 }
 
+// 第三方接入授权：列出登记记录，管理员可手动取消。
+async function loadIntegrations() {
+  try {
+    const result = await api('/api/admin/integrations');
+    state.integrations = Array.isArray(result.integrations) ? result.integrations : [];
+    renderIntegrations();
+  } catch (error) {
+    state.integrations = [];
+    renderIntegrations();
+    toast(`接入授权列表加载失败：${error.message}`, 'error');
+  }
+}
+
+function renderIntegrations() {
+  const container = $('#integrationList');
+  if (!container) return;
+  const items = Array.isArray(state.integrations) ? state.integrations : [];
+  if (!items.length) {
+    container.innerHTML = '<div class="empty">还没有第三方接入授权。外部软件填入网关地址和本地 Key 后会出现在这里。</div>';
+    return;
+  }
+  container.innerHTML = items.map((item) => {
+    const cancelled = item.status === 'cancelled';
+    const keyName = item.sourceKey ? `${escapeHtml(item.sourceKey.name)}${item.sourceKey.enabled ? '' : '（已停用）'}` : '<span class="muted">来源 Key 已删除</span>';
+    const verified = item.lastVerifiedAt ? `最近验证：${escapeHtml(new Date(item.lastVerifiedAt).toLocaleString())}` : '';
+    const failed = item.lastFailureAt ? `最近失败：${escapeHtml(new Date(item.lastFailureAt).toLocaleString())}${item.lastFailureReason ? `（${escapeHtml(item.lastFailureReason)}）` : ''}` : '';
+    return `<article class="item-card"><div><div class="item-title">${escapeHtml(item.label || '未命名接入')}${cancelled ? '<span class="tag off">已取消</span>' : '<span class="tag active">已授权</span>'}</div><div class="item-meta"><span>来源 Key：${keyName}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span><span>成功 ${item.successCount} 次 · 失败 ${item.failureCount} 次</span>${verified ? `<span>${verified}</span>` : ''}${failed ? `<span class="error-text">${failed}</span>` : ''}</div>${item.lastFailureReason && cancelled ? `<div class="item-meta"><span class="muted">取消原因：${escapeHtml(item.lastFailureReason)}</span></div>` : ''}</div><div class="item-actions">${cancelled ? '' : `<button class="text-button delete" data-action="revoke-integration" data-id="${escapeHtml(item.id)}">取消授权</button>`}</div></article>`;
+  }).join('');
+}
+
+async function revokeIntegration(item) {
+  if (!item) return;
+  if (!window.confirm(`确认取消「${item.label || '未命名接入'}」的授权吗？对方将不能再刷新配置，已签发的调用仍按本地 Key 权限处理。`)) return;
+  try {
+    await api(`/api/admin/integrations/${encodeURIComponent(item.id)}/revoke`, { method: 'POST', body: '{}' });
+    toast('已取消该接入授权');
+    await loadIntegrations();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 async function handleListClick(event) {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const item = (button.dataset.action.includes('upstream') ? state.config.upstreams : button.dataset.action.includes('route') ? state.config.routes : state.config.localApiKeys).find((candidate) => candidate.id === button.dataset.id);
   if (button.dataset.action === 'edit-upstream') fillUpstreamForm(item);
   if (button.dataset.action === 'edit-route') fillRouteForm(item);
+  if (button.dataset.action === 'revoke-integration') await revokeIntegration(item);
   if (button.dataset.action === 'edit-key') fillKeyEditForm(item);
   if (button.dataset.action === 'toggle-key') await toggleKey(item);
   if (button.dataset.action === 'copy-key') await copyLocalKey(item);
@@ -1620,6 +1668,7 @@ $('#keyEditForm').addEventListener('submit', saveKeyEdit);
 $('#upstreamList').addEventListener('click', handleListClick);
 $('#routeList').addEventListener('click', handleListClick);
 $('#keyList').addEventListener('click', handleListClick);
+$('#integrationList').addEventListener('click', handleListClick);
 $('#clearMetricsButton').addEventListener('click', clearMetrics);
 $('#applyMetricsRangeButton').addEventListener('click', applyMetricsRange);
 $('#resetMetricsRangeButton').addEventListener('click', resetMetricsRange);
@@ -1642,6 +1691,7 @@ $('#usageFileInput').addEventListener('change', async (event) => {
 });
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#viewChangelogButton')?.addEventListener('click', viewChangelog);
+$('#refreshIntegrationsButton')?.addEventListener('click', loadIntegrations);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#probeThinkingButton').addEventListener('click', probeAllThinking);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);

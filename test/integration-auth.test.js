@@ -12,6 +12,7 @@ const {
   integrationPublic,
   buildVerifyResponse
 } = require('../src/integration');
+const { buildConfigResponse } = require('../src/integration');
 
 const projectRoot = path.join(__dirname, '..');
 
@@ -36,6 +37,12 @@ assert.equal(verifyPayload.verified, true);
 assert.equal(verifyPayload.authorization.token, token);
 assert.equal(verifyPayload.endpoints.openai.chat, '/v1/chat/completions');
 assert.equal(buildVerifyResponse({ integration: normalized, key: { id: 'key_a' }, models: [] }).authorization.token, undefined, '非首次验证不应回传明文令牌');
+const configPayload = buildConfigResponse({ key: { id: 'key_a', name: '默认', modelAccessMode: 'all', allowedGroups: [], allowedModels: [] }, models: [] });
+assert.equal(configPayload.verified, true);
+assert.equal(configPayload.modelsCount, 0);
+assert.ok(configPayload.modelsNotice, '空模型列表应给出提示');
+assert.equal(configPayload.authorization, undefined, 'config 不应携带授权信息');
+assert.equal(buildConfigResponse({ key: { id: 'k' }, models: [{ id: 'm1' }] }).modelsNotice, null);
 
 function requestJson(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -127,6 +134,12 @@ async function main() {
     const o3 = first.body.models.find((model) => model.id === 'o3-mini');
     assert.equal(o3.supportsThinking, true, '应回传推断出的思考能力');
     assert.deepEqual(o3.thinkingLevels, ['low', 'medium', 'high']);
+    assert.equal(first.body.modelsCount, 2);
+    assert.ok(Array.isArray(first.body.nextSteps) && first.body.nextSteps.length >= 2);
+    assert.equal(first.body.modelsNotice, null, '有可访问模型时不应出现空列表提示');
+    const health = await requestJson(`${base}/health`);
+    assert.equal(health.status, 200);
+    assert.equal(health.body.version, require('../package.json').version);
 
     const second = await requestJson(verifyEndpoint, { method: 'POST', body: JSON.stringify({ apiKey, authorization: authorizationToken }) });
     assert.equal(second.status, 200, JSON.stringify(second.body));
@@ -233,6 +246,53 @@ async function main() {
 
     // 频率限制：同来源每分钟 60 次，超限返回 429。
     const replacementKey = imported.body.localApiKeys.find((item) => item.enabled !== false);
+    // config：后续刷新配置，可用 API Key 或接入令牌认证。
+    // 初始 Key 已在级联取消测试中删除，这里新建一个默认权限的 Key 做接入。
+    const connectKeyResponse = await requestJson(`${base}/api/admin/local-keys`, { method: 'POST', headers: adminHeaders, body: JSON.stringify({ name: 'Connect Client' }) });
+    assert.equal(connectKeyResponse.status, 201, JSON.stringify(connectKeyResponse.body));
+    const connectKey = connectKeyResponse.body.item.key;
+    const afterImportFresh = await requestJson(verifyEndpoint, { method: 'POST', body: JSON.stringify({ apiKey: connectKey, label: '配置拉取' }) });
+    assert.equal(afterImportFresh.status, 200, JSON.stringify(afterImportFresh.body));
+    const activeToken = afterImportFresh.body.authorization.token;
+    const configByKey = await requestJson(`${base}/api/integration/config`, { headers: { Authorization: `Bearer ${connectKey}` } });
+    assert.equal(configByKey.status, 200, JSON.stringify(configByKey.body));
+    assert.equal(configByKey.body.modelsCount, 2);
+    assert.deepEqual(configByKey.body.models.map((model) => model.id).sort(), ['demo-model', 'o3-mini']);
+    assert.equal(configByKey.body.authorization, undefined);
+    const configByToken = await requestJson(`${base}/api/integration/config`, { headers: { Authorization: `Bearer ${activeToken}` } });
+    assert.equal(configByToken.status, 200, JSON.stringify(configByToken.body));
+    assert.equal(configByToken.body.apiKey.id, connectKeyResponse.body.item.id);
+    const configBadKey = await requestJson(`${base}/api/integration/config`, { headers: { Authorization: 'Bearer missing' } });
+    assert.equal(configBadKey.status, 401);
+    assert.equal(configBadKey.body.error?.code, 'unauthorized');
+    // 已取消的令牌不能再刷新配置。
+    const configCancelledToken = await requestJson(`${base}/api/integration/config`, { headers: { Authorization: `Bearer ${postDelete.body.authorization.token}` } });
+    assert.equal(configCancelledToken.status, 403);
+    assert.equal(configCancelledToken.body.error?.code, 'authorization_cancelled');
+
+    // 管理员视图：列出全部接入并手动取消。
+    const adminList = await requestJson(`${base}/api/admin/integrations`, { headers: adminHeaders });
+    assert.equal(adminList.status, 200);
+    const listed = adminList.body.integrations;
+    assert.ok(Array.isArray(listed) && listed.length >= 3);
+    assert.ok(listed.every((item) => !('tokenHash' in item)), '管理员视图不应暴露令牌哈希');
+    const seededItem = listed.find((item) => item.id === afterImportFresh.body.authorization.id);
+    assert.ok(seededItem && seededItem.sourceKey?.id, '接入记录应回带来源 Key');
+    assert.equal(seededItem.status, 'active');
+    const adminRevoke = await requestJson(`${base}/api/admin/integrations/${encodeURIComponent(seededItem.id)}/revoke`, { method: 'POST', headers: adminHeaders, body: '{}' });
+    assert.equal(adminRevoke.status, 200, JSON.stringify(adminRevoke.body));
+    assert.equal(adminRevoke.body.revoked, true);
+    assert.equal(adminRevoke.body.authorization.status, 'cancelled');
+    const adminRevokeAgain = await requestJson(`${base}/api/admin/integrations/${encodeURIComponent(seededItem.id)}/revoke`, { method: 'POST', headers: adminHeaders, body: '{}' });
+    assert.equal(adminRevokeAgain.body.alreadyCancelled, true);
+    const adminRevokeMissing = await requestJson(`${base}/api/admin/integrations/int_missing/revoke`, { method: 'POST', headers: adminHeaders, body: '{}' });
+    assert.equal(adminRevokeMissing.status, 404);
+    const configAfterAdminRevoke = await requestJson(`${base}/api/integration/config`, { headers: { Authorization: `Bearer ${activeToken}` } });
+    assert.equal(configAfterAdminRevoke.status, 403);
+    assert.equal(configAfterAdminRevoke.body.error?.code, 'authorization_cancelled');
+    const adminListFinal = await requestJson(`${base}/api/admin/integrations`, { headers: adminHeaders });
+    assert.ok(adminListFinal.body.integrations.some((item) => item.id === seededItem.id && item.status === 'cancelled' && item.lastFailureReason === '管理员手动取消'));
+
     let limited = 0;
     for (let index = 0; index < 80; index += 1) {
       const result = await requestJson(verifyEndpoint, { method: 'POST', body: JSON.stringify({ apiKey: replacementKey.key }) });

@@ -86,7 +86,35 @@ function buildVerifyResponse({ integration, key, models, plainToken = null }) {
     endpoints: ENDPOINTS,
     endpointHint: 'endpoints 为相对路径，请拼接在你填写的网关地址之后',
     models,
+    modelsCount: models.length,
+    modelsNotice: models.length ? null : '该 Key 没有可访问的模型：可能处于自定义权限模式且未勾选任何模型，或网关尚未发布本地模型',
+    nextSteps: [
+      plainToken ? '保存返回的令牌明文（之后可用于刷新配置、自助注销授权）' : '令牌已存在，未再次返回明文',
+      `调用模型接口时使用网关地址拼接 ${ENDPOINTS.openai.chat}，请求头携带 Authorization: Bearer <API Key>`,
+      '需要重新拉取模型列表时调用 GET /api/integration/config（可用令牌或 API Key 认证）'
+    ],
     verifiedAt: nowIso()
+  };
+}
+
+// 后续刷新配置时返回的视图：不再携带令牌与登记信息，只描述当前可用的模型与权限。
+function buildConfigResponse({ key, models }) {
+  return {
+    verified: true,
+    gateway: { service: SERVICE_NAME, version: GATEWAY_VERSION },
+    apiKey: {
+      id: key.id,
+      name: key.name,
+      modelAccessMode: key.modelAccessMode,
+      allowedGroups: key.allowedGroups || [],
+      allowedModels: key.allowedModels || []
+    },
+    endpoints: ENDPOINTS,
+    endpointHint: 'endpoints 为相对路径，请拼接在你填写的网关地址之后',
+    models,
+    modelsCount: models.length,
+    modelsNotice: models.length ? null : '该 Key 没有可访问的模型：可能处于自定义权限模式且未勾选任何模型，或网关尚未发布本地模型',
+    refreshedAt: nowIso()
   };
 }
 
@@ -98,5 +126,6 @@ module.exports = {
   normalizeIntegration,
   integrationPublic,
   integrationErrorBody,
-  buildVerifyResponse
+  buildVerifyResponse,
+  buildConfigResponse
 };
