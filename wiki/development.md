@@ -46,8 +46,25 @@ npm.cmd test
 | `test/metrics-range.integration.test.js` | 集成 | `/api/admin/metrics/range` 参数校验、闭区间命中、范围与全量统计互不影响 |
 | `test/log-search.integration.test.js` | 集成 | 内容摘要入日志、按关键字 / Key / 时间段搜索 `/api/admin/metrics/logs`、Key 列表脱敏、非法时间参数 400 |
 | `test/integration-auth.test.js` | 集成 | 接入授权 verify/revoke/status、令牌哈希、Key 删除级联取消、备份导入保留 |
-接入方刷新配置（`GET /api/integration/config`，Key 或令牌认证）与管理员视图/取消（`/api/admin/integrations`）也在其中。
+| `test/oauth.test.js` | 单元 | 回调白名单、S256 PKCE、CSRF/会话绑定、拒绝/过期/重放、刷新轮换与缩权、权限快照、安全回跳 |
+| `test/oauth.integration.test.js` | 集成 | 本地账号登录确认、三协议权限、管理隔离、撤销/停用/账号变更、重启/导入、旧 Key 兼容、HTTP/CSRF 防护 |
 | `test/release-notes.test.js` | 单元 | 更新日志 Markdown 渲染：标题/列表/引用/代码块、链接协议白名单、注入转义 |
+
+接入方刷新配置（`GET /api/integration/config`，Key 或令牌认证）与管理员视图/取消（`/api/admin/integrations`）也在接入测试中。`test/auth.integration.test.js` 额外覆盖 OIDC 登录后完整返回第三方同意页，再确认、换码和撤销。
+
+### 账号授权与浏览器回归
+
+OAuth 核心位于 `src/oauth.js`，HTTP 边界位于 `src/oauth-http.js`；都只使用 Node 内置模块。单元测试通过可注入时钟验证真实到期规则，不需要等待数小时。集成测试启动临时网关和本机模拟上游，不会读取生产数据或消耗真实上游额度。
+
+```powershell
+node test/oauth.test.js
+node test/oauth.integration.test.js
+# Chrome + Node 22+（CHROME_PATH 可指定路径）
+node test/oauth.integration.test.js --browser
+npm.cmd run test:ui
+```
+
+`test:ui` 包含原有 UI 基线和新增 OAuth 浏览器回归。`test/oauth.browser.js` 通过现有 CDP + Node 内置 WebSocket 测试真实的应用登记／非法回调、账号登录回跳、同意／拒绝、回调 state/issuer、后台撤销、应用编辑／停用／删除、文本注入转义与窄屏布局。浏览器使用临时用户配置，接入回调由本机测试服务器处理，不安装自动化依赖。
 
 集成测试模式：
 

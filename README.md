@@ -41,6 +41,7 @@
 - OIDC 使用 Authorization Code + PKCE、state、nonce、JWKS 签名校验和 HttpOnly 会话
 - 本地账号密码使用 scrypt 加盐哈希，登录带来源失败锁定；会话绑定登录时的访问来源
 - 本地 API Key 管理
+- 第三方账号授权：管理员登记应用与回调白名单，用户通过已有本地账号／OIDC 登录并明确同意；使用 OAuth 2.0 授权码 + S256 PKCE 换取独立模型访问令牌，支持刷新、过期与撤销，不共享密码或原始 API Key，也不授予管理权限
 - 本地 API Key 支持启用/停用和重命名，至少保留一个可管理的 Key
 - 每个 Key 可独立设置允许的模型分组与组内模型：进入「本地调用 Key → 新建/编辑 → 自定义分组与模型」，启用分组后逐个勾选或组内全选。分组沿用目标模型 ID 的前缀，别名独立授权；新同步模型不会自动加入权限。旧 Key 默认允许全部模型，自定义为空则禁止全部模型；模型列表与 Chat / Messages / Responses 调用均受限制。
 - 可配置上游超时、每个上游的重试次数、备用尝试次数和切换前等待时间
@@ -48,6 +49,21 @@
 - 上游健康状态和内存熔断：连续失败达到阈值后暂时跳过，冷却后自动半开探测
 - 配置保存在 `data/config.json`，该文件已加入 `.gitignore`
 - 默认只监听 `127.0.0.1`，避免未经配置暴露到局域网
+
+## 第三方接入：账号授权或 API Key
+
+在后台「访问控制 → 本地调用 Key」页的「账号授权应用」登记应用名称、来源 Key（模型权限与配额上限）以及准确的回调地址。将生成的 Client ID 交给接入方，**不需要提供来源 Key 明文**。目前复用已有管理员账号／OIDC 登录，并非新增普通用户体系；本机免登录管理也不能跳过账号登录和授权确认。
+
+- 发现：`GET /.well-known/oauth-authorization-server`
+- 授权：`GET /oauth/authorize`，只接受 `response_type=code`、随机 `state` 和 S256 PKCE
+- 换码／刷新：`POST /oauth/token`，支持表单编码与 JSON；访问令牌有效期 1 小时，`offline_access` 持续连接最长 30 天
+- 模型请求携带 `Authorization: Bearer <access_token>`；配置读取使用 `GET /api/integration/config`
+- 撤销：`POST /oauth/revoke` 或后台「第三方接入授权 → 取消授权」；撤销使该授权的访问与刷新令牌立即失效
+- 远程授权必须使用 HTTPS；只有回环开发访问允许 HTTP。反向代理需配置 `TRUSTED_PROXY_ADDRESSES` 并正确传递 `Host`、`X-Forwarded-For`、`X-Forwarded-Proto`
+
+原有 API Key 流程继续保留：第三方填写网关地址和本地 Key 后，可调用 `POST /api/integration/verify` 自动拉取配置；后续使用原始 Key 调用模型。**旧 `sakura-int_` 接入登记令牌仅用于配置与登记管理，不能调用模型**，不要与 OAuth 访问令牌混用。
+
+完整参数、权限规则、刷新与撤销示例见[第三方接入指南](wiki/integration.md)。
 
 ## Windows 客户端
 
@@ -419,11 +435,11 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 - `AUTHENTIK_POST_LOGOUT_REDIRECT_URI`：可选，外部 OIDC 提供商登出后的返回地址
 - `TRUSTED_PROXY_ADDRESSES`：可选，允许提供 `X-Forwarded-For` 的反向代理精确 IP 列表
 
-如果需要让其它设备访问，可以用 `HOST=0.0.0.0` 启动。远程管理访问必须完整配置外部 OIDC 提供商；模型接口仍需使用本地 API Key，并建议同时使用 HTTPS、防火墙和网络访问控制。
+如果需要让其它设备访问，可以用 `HOST=0.0.0.0` 启动。远程管理访问需要配置本地账号或外部 OIDC 提供商；模型接口使用本地 API Key 或获准的 OAuth 访问令牌。远程账号授权强制 HTTPS，并建议同时设置防火墙和网络访问控制。
 
 ## 注意事项
 
-- `data/config.json` 含有上游 API Key、本地 API Key 和旧版兼容字段，请不要提交或分享；OIDC Client Secret 不会写入该文件。
+- `data/config.json` 含有上游 API Key、本地 API Key、账号密码哈希、OAuth 应用与令牌哈希以及旧版兼容字段，请不要提交或分享；OIDC Client Secret 不会写入该文件。配置导出是敏感备份，完整恢复备份也会恢复其中的授权状态。
 - `data/metrics.json` / `data/metrics-log.jsonl` 只包含脱敏请求元数据、Token 数字与内容摘要（最后一条用户消息的截断文本，用于日志搜索），不包含完整请求正文、请求头、Key 或上游完整地址；仍建议不要分享运行数据目录。
 - 已认证的管理后台会显示完整本地调用 Key；上游 API Key 仍只显示掩码。请避免向不受信任的用户授予外部 OIDC 提供商的管理后台访问权限。
 - 第一版按最常见的 OpenAI Chat Completions 与 Anthropic Messages 协议实现，复杂的供应商私有字段、图片 URL 的特殊格式、部分高级工具参数可能需要后续适配。

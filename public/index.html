@@ -26,7 +26,7 @@
 
     <section class="notice">
       <strong>访问保护</strong>
-      <span>本机回环访问自动放行；远程管理访问需要登录，可在「访问控制 → 管理认证」里选择外部 OIDC 提供商统一登录或本地账号密码。模型调用接口仍使用本地 API Key。</span>
+      <span>本机回环管理访问默认放行；远程管理需要本地账号或 OIDC 登录。第三方可使用 API Key，或通过账号登录并确认授权取得独立的模型访问令牌。</span>
     </section>
 
     <div class="admin-layout">
@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v2.9.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v3.0.0</strong></div>
       </aside>
 
       <div class="content">
@@ -104,8 +104,19 @@
           <div><h2>第三方接入授权</h2></div>
           <button id="refreshIntegrationsButton" class="button secondary">刷新</button>
         </div>
-        <p class="help">外部软件在接入界面填入本网关地址和本地调用 Key，调用 <code>POST /api/integration/verify</code> 即可自动验证权限并拉取模型配置；需要刷新时调用 <code>GET /api/integration/config</code>。接入令牌只显示一次，删除来源 Key 会自动取消其全部接入。已接入的软件仍可正常调用 <code>/v1/*</code> 模型接口。</p>
+        <p class="help">同时展示 API Key 接入与账号授权。账号授权使用独立的模型访问令牌，撤销后模型调用与刷新均失效；API Key 接入仍使用原始 Key 调用模型，取消登记只停止刷新配置。删除来源 Key 会取消它的全部授权。</p>
         <div id="integrationList" class="key-list"></div>
+      </section>
+
+      <section class="panel dashboard-card" data-panel-id="oauthClients" data-tab-page="keys">
+        <div class="panel-heading">
+          <div><h2>账号授权应用</h2></div>
+          <div class="panel-actions"><button id="refreshOAuthClientsButton" type="button" class="button secondary">刷新</button><button id="addOAuthClientButton" type="button" class="button primary">＋ 登记应用</button></div>
+        </div>
+        <p class="help">使用 OAuth 2.0 授权码 + S256 PKCE。先登记应用、准确的回调地址和来源 Key 权限上限，将生成的 Client ID 交给接入方。用户必须登录网关账号并明确确认；即使本机免登录也不能跳过账号授权。第三方不会获得密码、原始 Key 或管理权限。</p>
+        <p class="help">发现端点：<code>/.well-known/oauth-authorization-server</code>。授权端点：<code>/oauth/authorize</code>。远程授权必须使用 HTTPS。修改、停用或删除应用会撤销它已有的授权。</p>
+        <div id="oauthClientList" class="key-list"></div>
+        <div id="oauthClientMessage" class="form-message error" role="status"></div>
       </section>
 
           <section class="panel settings-panel dashboard-card" data-panel-id="adminAuth" data-tab-page="adminAuth">
@@ -113,7 +124,7 @@
           <div><h2>管理认证</h2></div>
           <button id="saveAdminAuthModeButton" class="button primary">保存认证方式</button>
         </div>
-        <p class="help">远程访问管理后台时使用下面选择的方式；两种方式可以随时切换。模型调用接口不受影响，仍使用本地 API Key。</p>
+        <p class="help">远程访问管理后台与第三方账号授权使用下面选择的登录方式。本地 API Key 调用不受切换影响；账号授权只在对应认证方式下有效。</p>
         <fieldset class="key-access-fieldset">
           <legend>远程管理认证方式</legend>
           <label class="check-label"><input type="radio" name="adminAuthMode" value="oidc" checked> 外部 OIDC 提供商（<span id="adminAuthOidcState">检查中</span>）</label>
@@ -374,10 +385,25 @@
     </form>
   </dialog>
 
+  <dialog id="oauthClientDialog">
+    <form id="oauthClientForm" class="dialog-form">
+      <div class="dialog-heading"><div><span class="section-number">OAUTH</span><h2>登记账号授权应用</h2></div><button type="button" data-dialog-close="oauthClientDialog" class="icon-button" aria-label="关闭">×</button></div>
+      <input id="oauthClientId" type="hidden">
+      <label>应用名称<input id="oauthClientName" maxlength="100" required autocomplete="off"></label>
+      <label>来源 Key（权限与配额上限）<select id="oauthClientSourceKey" required></select></label>
+      <label>回调地址（每行一个，最多 10 个）<textarea id="oauthClientRedirectUris" rows="4" required placeholder="https://app.example.com/oauth/callback"></textarea></label>
+      <label class="check-label"><input id="oauthClientEnabled" type="checkbox" checked> 允许用户授权此应用</label>
+      <p class="help">回调地址必须使用 HTTPS；本机可使用 HTTP localhost、127.0.0.1 或 [::1]。回调不能与网关使用同一主机名（不同端口也不行），避免泄露管理 Cookie；本机可分别使用 localhost 和 127.0.0.1。端口、路径和查询参数须准确匹配，不支持通配符。修改后需要重新授权。</p>
+      <div id="oauthClientFormMessage" class="form-message error" role="alert"></div>
+      <div class="dialog-actions"><button type="button" data-dialog-close="oauthClientDialog" class="button secondary">取消</button><button type="submit" class="button primary">保存应用</button></div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status"></div>
   <script src="/model-groups.js"></script>
   <script src="/key-access.js"></script>
 <script src="/release-notes.js"></script>
   <script src="/app.js"></script>
+  <script src="/oauth-clients.js"></script>
 </body>
 </html>

@@ -41,6 +41,9 @@ const { classifyEndpointError, createEndpointHealth } = require('./endpoint-rout
 const endpointHealth = createEndpointHealth();
 const responseBodies = new WeakMap();
 const { createAdminAuth } = require('./admin-auth');
+const { safeReturnTo } = require('../public/auth-utils');
+const { OAuthProvider, ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX, normalizeOAuthState } = require('./oauth');
+const { createOAuthHandler } = require('./oauth-http');
 const { userFromBody, userSummary } = require('./admin-users');
 const { normalizeBalanceEndpoint, parseUpstreamBalance } = require('./balance');
 const { clientIdentityHeaders, normalizeClientIdentity } = require('./client-identity');
@@ -109,6 +112,41 @@ function logRequestError(requestId, status, body) {
 }
 
 const adminAuth = createAdminAuth({ log, getAdminAuth: () => config.adminAuth });
+const oauthProvider = new OAuthProvider({ getConfig: () => config, save: () => saveConfig(config), isSubjectActive: oauthSubjectIsActive });
+const handleOAuth = createOAuthHandler({
+  provider: oauthProvider, adminAuth, getConfig: () => config, accountAccess: requireAccountAccess,
+  subjectForAccess: oauthSubjectForAccess, isSameOrigin: adminRequestIsSameOrigin, requireAdmin,
+  serveStatic
+});
+
+function oauthSubjectForAccess(access) {
+  return {
+    id: access.user?.sub || '', mode: access.mode, username: access.user?.username || '',
+    issuer: access.mode === 'oidc' ? adminAuth.issuerUrl : '',
+    credentialVersion: access.mode === 'password' ? access.session?.credentialVersion || '' : hashToken(adminAuth.clientId)
+  };
+}
+
+function oauthSubjectIsActive(subject) {
+  if (!subject || subject.mode !== adminAuth.remoteMode()) return false;
+  if (subject.mode === 'password') {
+    const user = adminAuth.enabledLocalUsers().find((item) => `local:${item.id}` === subject.id);
+    return Boolean(user && subject.credentialVersion === hashToken(user.passwordHash));
+  }
+  return subject.mode === 'oidc' && adminAuth.isConfigured() && subject.issuer === adminAuth.issuerUrl
+    && subject.credentialVersion === hashToken(adminAuth.clientId) && Boolean(subject.id);
+}
+
+function requireAccountAccess(req) {
+  const access = adminAuth.authenticate(req, { requireAccount: true });
+  if (access.ok && !oauthSubjectIsActive(oauthSubjectForAccess(access))) return { ...access, ok: false };
+  return access;
+}
+
+function loginNeedsAccount(requestUrl) {
+  return requestUrl.searchParams.get('account') === '1'
+    || new URL(safeReturnTo(requestUrl.searchParams.get('returnTo')), 'http://localhost').pathname === '/oauth/authorize';
+}
 
 function safeRecordRequest(entry) {
   try {
@@ -163,8 +201,7 @@ function sendRedirect(res, location, extraHeaders = {}) {
 }
 
 function validateLocalReturnTo(value) {
-  const path = String(value || '/').trim();
-  return path.startsWith('/') && !path.startsWith('//') && path.length <= 1000 ? path : '/';
+  return safeReturnTo(value);
 }
 
 function loginPageUrl(returnTo = '/', error = '') {
@@ -230,7 +267,7 @@ function corsHeaders() {
 
 function getBearerToken(req) {
   const header = req.headers.authorization || '';
-  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  return /^Bearer\s+/i.test(header) ? header.replace(/^Bearer\s+/i, '').trim() : '';
 }
 
 function getApiToken(req) {
@@ -416,6 +453,12 @@ function sourceDiagnosticText(req) {
 }
 
 function requireAdmin(req, res) {
+  // 模型授权令牌不能借本机免登录或附带 Cookie 跨到管理面。
+  const credentials = [getBearerToken(req), req.headers['x-api-key']];
+  if (credentials.some((token) => typeof token === 'string' && [ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX].some((prefix) => token.startsWith(prefix)))) {
+    sendJson(res, 403, { error: { message: '账号授权令牌不能访问管理接口，请使用网关管理会话', type: 'permission_error', code: 'oauth_admin_forbidden' } }, { 'Cache-Control': 'no-store' });
+    return false;
+  }
   const access = adminAuth.authenticate(req);
   if (access.ok) {
     if (!adminRequestIsSameOrigin(req, access)) {
@@ -442,7 +485,19 @@ function requireAdmin(req, res) {
 }
 
 function requireApiKey(req, res, requestId = requestIdFromRequest(req), localProtocol = 'openai') {
-  const key = findLocalKey(getApiToken(req));
+  const token = getApiToken(req);
+  if (typeof token === 'string' && token.startsWith(ACCESS_TOKEN_PREFIX)) {
+    try {
+      const access = oauthProvider.authenticate(token, req.method === 'GET' ? 'models:read' : 'models:invoke');
+      return access.key;
+    } catch (error) {
+      const status = error.statusCode || 401;
+      const body = errorForProtocol(localProtocol, { error: { message: error.message, type: status === 403 ? 'permission_error' : 'authentication_error', code: error.oauthCode || 'invalid_token' } }, status);
+      sendJsonWithRequestId(res, status, body, requestId, { 'WWW-Authenticate': `Bearer error="${error.oauthCode || 'invalid_token'}"` });
+      return null;
+    }
+  }
+  const key = findLocalKey(token);
   if (key) return key;
   const body = errorForProtocol(localProtocol, { error: { message: '需要有效的本地 API Key', type: 'authentication_error' } }, 401);
   logRequestError(requestId, 401, body);
@@ -1936,6 +1991,8 @@ function recordIntegrationFailure(integration, reason) {
 }
 
 function cancelIntegrationsForKey(keyId, reason) {
+  oauthProvider.cancelWhere((grant) => grant.sourceKeyId === keyId, reason);
+  oauthProvider.clearPending();
   for (const integration of config.integrations || []) {
     if (integration.sourceKeyId === keyId && integration.status === 'active') {
       integration.status = 'cancelled';
@@ -2090,6 +2147,15 @@ async function handleIntegration(req, res, pathname) {
   // 接入方在已建立连接后刷新配置：可用接入令牌或本地 API Key 认证。
   if (pathname === '/api/integration/config' && req.method === 'GET') {
     const token = getApiToken(req);
+    if (typeof token === 'string' && token.startsWith(ACCESS_TOKEN_PREFIX)) {
+      try {
+        const { key, grant } = oauthProvider.authenticate(token, 'models:read');
+        sendJson(res, 200, { ...buildConfigResponse({ key, models: accessibleModelsForKey(key) }), authorization: { id: grant.id, type: 'oauth', scopes: grant.scopes } }, { 'Cache-Control': 'no-store' });
+      } catch (error) {
+        sendJson(res, error.statusCode || 401, integrationErrorBody(error.oauthCode || 'invalid_token', error.message));
+      }
+      return;
+    }
     let key = null;
     let integration = findIntegrationByToken(token);
     if (integration) {
@@ -2801,6 +2867,7 @@ function importConfig(rawConfig, preserveCredentials = true) {
     importedAdminAuth = normalizeAdminAuth(sourceAdminAuth);
   }
   const importedSettings = validateImportedSettings(source.settings);
+  const importedOAuth = normalizeOAuthState(preserveCredentials ? config : source);
   config.version = Number(source.version) || 1;
   config.adminToken = adminToken;
   config.adminAuth = importedAdminAuth;
@@ -2814,6 +2881,12 @@ function importConfig(rawConfig, preserveCredentials = true) {
   config.integrations = preserveCredentials
     ? config.integrations
     : (Array.isArray(source.integrations) ? source.integrations : []).map(normalizeIntegration);
+  Object.assign(config, importedOAuth);
+  oauthProvider.clearPending();
+  if (!preserveCredentials) {
+    adminAuth.sessions.clear();
+    adminAuth.transactions.clear();
+  }
   upstreamBalances.clear();
   saveConfig(config);
   return publicConfig(config);
@@ -2821,7 +2894,7 @@ function importConfig(rawConfig, preserveCredentials = true) {
 
 function serveStatic(res, pathname, fileOverride = '') {
   const fileName = fileOverride || (pathname === '/' ? 'index.html' : pathname.slice(1));
-  if (!['index.html', 'login.html', 'login.js', 'app.js', 'model-groups.js', 'key-access.js', 'release-notes.js', 'styles.css'].includes(fileName)) {
+  if (!['index.html', 'login.html', 'login.js', 'auth-utils.js', 'authorize.html', 'authorize.js', 'app.js', 'oauth-clients.js', 'model-groups.js', 'key-access.js', 'release-notes.js', 'styles.css'].includes(fileName)) {
     sendText(res, 404, 'Not found');
     return;
   }
@@ -2830,8 +2903,14 @@ function serveStatic(res, pathname, fileOverride = '') {
     sendText(res, 404, 'Not found');
     return;
   }
-  const types = { 'index.html': 'text/html; charset=utf-8', 'login.html': 'text/html; charset=utf-8', 'login.js': 'application/javascript; charset=utf-8', 'app.js': 'application/javascript; charset=utf-8', 'model-groups.js': 'application/javascript; charset=utf-8', 'key-access.js': 'application/javascript; charset=utf-8', 'release-notes.js': 'application/javascript; charset=utf-8', 'styles.css': 'text/css; charset=utf-8' };
-  sendText(res, 200, fs.readFileSync(filePath, 'utf8'), types[fileName]);
+  if (fileName.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+    if (!res.hasHeader('Content-Security-Policy')) res.setHeader('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  }
+  const types = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+  sendText(res, 200, fs.readFileSync(filePath, 'utf8'), types[path.extname(fileName)]);
 }
 
 async function handleAdmin(req, res, pathname) {
@@ -2894,11 +2973,18 @@ async function handleAdmin(req, res, pathname) {
       const key = config.localApiKeys.find((candidate) => candidate.id === item.sourceKeyId) || null;
       return { ...integrationPublic(item), sourceKey: key ? { id: key.id, name: key.name, enabled: key.enabled !== false } : null };
     });
+    integrations.push(...config.oauthGrants.map((grant) => oauthProvider.publicGrant(grant)));
     sendJson(res, 200, { integrations });
     return;
   }
   if (req.method === 'POST' && pathname.startsWith('/api/admin/integrations/') && pathname.endsWith('/revoke')) {
     const id = decodeURIComponent(pathname.slice('/api/admin/integrations/'.length, -'/revoke'.length));
+    const grant = config.oauthGrants.find((item) => item.id === id);
+    if (grant) {
+      const changed = oauthProvider.revokeWhere((item) => item.id === id, '管理员手动取消');
+      sendJson(res, 200, { revoked: true, alreadyCancelled: !changed, authorization: oauthProvider.publicGrant(config.oauthGrants.find((item) => item.id === id)) });
+      return;
+    }
     const integration = (config.integrations || []).find((item) => item.id === id);
     if (!integration) {
       sendJson(res, 404, { error: { message: '接入授权记录不存在' } });
@@ -3137,6 +3223,10 @@ async function handleAdmin(req, res, pathname) {
     const body = await readBody(req);
     const item = localKeyFromBody(body, config.localApiKeys[index]);
     config.localApiKeys[index] = item;
+    if (item.enabled === false) {
+      oauthProvider.cancelWhere((grant) => grant.sourceKeyId === id, '来源 Key 已停用');
+      oauthProvider.clearPending();
+    }
     saveConfig(config);
     sendJson(res, 200, { ...item });
     return;
@@ -3214,6 +3304,12 @@ async function handleAdmin(req, res, pathname) {
       sendJson(res, 400, { error: { message: '只有本地账号认证方式下才能开启「本机访问也要求登录」' } });
       return;
     }
+    if (config.adminAuth.remoteMode !== mode) {
+      oauthProvider.cancelWhere(() => true, '网关登录方式已切换，请重新授权');
+      oauthProvider.clearPending();
+      adminAuth.sessions.clear();
+      adminAuth.transactions.clear();
+    }
     config.adminAuth = merged;
     saveConfig(config);
     sendJson(res, 200, adminAuth.localUsersSummary());
@@ -3253,6 +3349,11 @@ async function handleAdmin(req, res, pathname) {
         return;
       }
       config.adminAuth = { ...normalizeAdminAuth(config.adminAuth), users: config.adminAuth.users.filter((item) => item.id !== id) };
+      oauthProvider.cancelWhere((grant) => grant.subject.mode === 'password' && grant.subject.id === `local:${id}`, '授权账号已删除');
+      oauthProvider.clearPending();
+      for (const [sessionId, session] of adminAuth.sessions) {
+        if (session.mode === 'password' && session.user.sub === `local:${id}`) adminAuth.sessions.delete(sessionId);
+      }
       saveConfig(config);
       sendJson(res, 200, adminAuth.localUsersSummary());
       return;
@@ -3274,6 +3375,13 @@ async function handleAdmin(req, res, pathname) {
     if (config.adminAuth.remoteMode === 'password' && user.enabled === false && enabledUsers.length === 0) {
       sendJson(res, 400, { error: { message: '本地账号认证下至少保留一个启用的管理员账号' } });
       return;
+    }
+    if (user.enabled === false || user.passwordHash !== config.adminAuth.users[index].passwordHash) {
+      oauthProvider.cancelWhere((grant) => grant.subject.mode === 'password' && grant.subject.id === `local:${id}`, '授权账号已停用或密码已修改');
+      oauthProvider.clearPending();
+      for (const [sessionId, session] of adminAuth.sessions) {
+        if (session.mode === 'password' && session.user.sub === `local:${id}`) adminAuth.sessions.delete(sessionId);
+      }
     }
     config.adminAuth = {
       ...normalizeAdminAuth(config.adminAuth),
@@ -3354,12 +3462,13 @@ async function requestHandler(req, res) {
   }
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname;
+  if (await handleOAuth(req, res, requestUrl)) return;
   if (pathname === '/health') {
     sendJson(res, 200, { status: 'ok', service: 'sakura-ai-gateway', version: APP_VERSION, time: nowIso() });
     return;
   }
   if (pathname === '/auth/status' && req.method === 'GET') {
-    const access = adminAuth.authenticate(req);
+    const access = loginNeedsAccount(requestUrl) ? requireAccountAccess(req) : adminAuth.authenticate(req);
     const mode = access.ok ? access.mode : adminAuth.remoteMode();
     const configured = access.ok ? true : adminAuth.remoteConfigured();
     const error = access.ok ? null : (configured
@@ -3406,7 +3515,7 @@ async function requestHandler(req, res) {
   }
   if (pathname === '/auth/login' && req.method === 'GET') {
     const returnTo = validateLocalReturnTo(requestUrl.searchParams.get('returnTo'));
-    const access = adminAuth.authenticate(req);
+    const access = loginNeedsAccount(requestUrl) ? requireAccountAccess(req) : adminAuth.authenticate(req);
     if (access.ok) {
       sendRedirect(res, returnTo);
       return;
@@ -3416,7 +3525,7 @@ async function requestHandler(req, res) {
   }
   if (pathname === '/auth/oidc/login' && req.method === 'GET') {
     const returnTo = validateLocalReturnTo(requestUrl.searchParams.get('returnTo'));
-    const access = adminAuth.authenticate(req);
+    const access = loginNeedsAccount(requestUrl) ? requireAccountAccess(req) : adminAuth.authenticate(req);
     if (access.ok) {
       sendRedirect(res, returnTo);
       return;

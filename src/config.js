@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { normalizeIntegration, integrationPublic } = require('./integration');
+const { normalizeOAuthState, oauthClientPublic } = require('./oauth');
 
 // 旧名称仅用于升级兼容；显式配置的新变量（包括 false/空值）优先。
 const DATA_DIR = (process.env.SAKURA_AI_GATEWAY_DATA_DIR ?? process.env.LOCAL_MODEL_GATEWAY_DATA_DIR) || path.join(__dirname, '..', 'data');
@@ -63,6 +64,8 @@ function defaultConfig() {
     modelSelectionMode: false,
     // 第三方软件的接入授权：令牌只存哈希，取消后续授权后立即失效。
     integrations: [],
+    oauthClients: [],
+    oauthGrants: [],
     settings: {
       host: FORCED_HOST || process.env.HOST || '127.0.0.1',
       port: FORCED_PORT || Number(process.env.PORT || 8787),
@@ -123,7 +126,8 @@ function loadConfig() {
       routes: Array.isArray(parsed.routes) ? parsed.routes : [],
       modelSelections: Array.isArray(parsed.modelSelections) ? parsed.modelSelections : [],
       modelSelectionMode: parsed.modelSelectionMode === true,
-      integrations: Array.isArray(parsed.integrations) ? parsed.integrations.map(normalizeIntegration) : []
+      integrations: Array.isArray(parsed.integrations) ? parsed.integrations.map(normalizeIntegration) : [],
+      ...normalizeOAuthState(parsed)
     };
     merged.settings = normalizeSettings(parsed.settings || merged.settings);
     if (FORCE_SETTINGS || FORCED_HOST) merged.settings.host = FORCED_HOST || process.env.HOST || merged.settings.host;
@@ -166,7 +170,8 @@ function publicConfig(config) {
     modelSelections: config.modelSelections || [],
     modelSelectionMode: config.modelSelectionMode === true,
     settings: config.settings,
-    integrations: (config.integrations || []).map(integrationPublic)
+    integrations: (config.integrations || []).map(integrationPublic),
+    oauthClients: (config.oauthClients || []).map(oauthClientPublic)
   };
 }
 

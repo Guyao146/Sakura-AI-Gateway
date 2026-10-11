@@ -119,6 +119,11 @@ async function main() {
     const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
     assert.equal(await evaluate('document.querySelector("#aboutVersion").textContent.replace(/^v/, "")'), packageVersion);
     assert.equal(await evaluate('document.querySelectorAll("#aboutVersion").length'), 1);
+    const plainLog = await evaluate('renderLogRow({id:"plain", status:200, success:true})');
+    assert(!plainLog.includes('log-row-expandable'), '无诊断的日志必须能正常渲染');
+    const diagnosticLog = await evaluate('renderLogRow({id:"with-diagnostics", status:200, success:true, diagnostics:{upstreamPath:"/v1/chat/completions", warnings:["<script>bad</script>"]}})');
+    assert(diagnosticLog.includes('log-row-expandable') && diagnosticLog.includes('log-detail-row'), '有诊断的日志应保留可展开详情');
+    assert(diagnosticLog.includes('&lt;script&gt;bad&lt;/script&gt;') && !diagnosticLog.includes('<script>'), '诊断文本必须转义');
     const aboutLinks = await evaluate('[...document.querySelectorAll(".about-panel a")].map(link => ({href:link.href, target:link.target, rel:link.rel}))');
     const repository = 'https://github.com/Guyao146/Sakura-AI-Gateway';
     for (const href of [repository, `${repository}/issues`, `${repository}/blob/main/LICENSE`, `${repository}/blob/main/LICENSING.md`, `${repository}/blob/main/wiki/index.md`, 'https://github.com/markedjs/marked']) {

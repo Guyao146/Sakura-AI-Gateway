@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const net = require('node:net');
 const { verifyPassword } = require('./admin-users');
+const { safeReturnTo } = require('../public/auth-utils');
 
 const SESSION_COOKIE = 'sakura_ai_gateway_admin_session';
 const TRANSACTION_COOKIE = 'sakura_ai_gateway_oidc_state';
@@ -82,8 +83,7 @@ function safeEqual(left, right) {
 }
 
 function validateReturnTo(value) {
-  const result = String(value || '/').trim();
-  return result.startsWith('/') && !result.startsWith('//') && result.length <= 1000 ? result : '/';
+  return safeReturnTo(value);
 }
 
 function positiveInteger(value, fallback, min, max) {
@@ -237,6 +237,7 @@ class AdminAuth {
       user: userClaims,
       mode: 'password',
       originHost: String(req.headers.host || '').toLowerCase(),
+      credentialVersion: crypto.createHash('sha256').update(user.passwordHash).digest('hex'),
       expiresAt: now + this.sessionTtlSeconds * 1000,
       createdAt: now
     });
@@ -307,12 +308,19 @@ class AdminAuth {
       if (sessionId) this.sessions.delete(sessionId);
       return null;
     }
+    if (session.mode === 'password') {
+      const user = this.enabledLocalUsers().find((item) => `local:${item.id}` === session.user.sub);
+      if (!user || session.credentialVersion !== crypto.createHash('sha256').update(user.passwordHash).digest('hex')) {
+        this.sessions.delete(sessionId);
+        return null;
+      }
+    }
     return { id: sessionId, ...session };
   }
 
-  authenticate(req) {
+  authenticate(req, { requireAccount = false } = {}) {
     const source = this.source(req);
-    if (isLoopbackAddress(source.address) && !this.requireLocalLogin()) {
+    if (!requireAccount && isLoopbackAddress(source.address) && !this.requireLocalLogin()) {
       return { ok: true, mode: 'local', source, configured: this.remoteConfigured() };
     }
     const session = this.sessionForRequest(req);

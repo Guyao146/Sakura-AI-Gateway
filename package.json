@@ -1,6 +1,6 @@
 {
   "name": "sakura-ai-gateway",
-  "version": "2.9.0",
+  "version": "3.0.0",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "description": "Sakura-AI-Gateway: an OpenAI/Anthropic compatible gateway for configurable upstream providers.",
@@ -15,10 +15,10 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
-    "test:ui": "node test/ui.browser.test.js",
+    "test:ui": "node test/ui.browser.test.js && node test/oauth.integration.test.js --browser",
     "dev": "node --watch src/server.js",
     "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-client.ps1",
-    "test": "node test/branding.test.js && node test/brand-migration.test.js && node test/endpoint-routing.test.js && node test/endpoint-routing.integration.test.js && node test/protocol.test.js && node test/modalities.test.js && node test/modalities.integration.test.js && node test/errors.test.js && node test/metrics.test.js && node test/metrics-range.integration.test.js && node test/log-search.integration.test.js && node test/routing.test.js && node test/model-groups.test.js && node test/key-access.test.js && node test/key-access.integration.test.js && node test/balance.test.js && node test/client-identity.test.js && node test/admin-auth.test.js && node test/admin-users.test.js && node test/update-checker.test.js && node test/release-notes.test.js && node test/desktop-clients.test.js && node test/integration-auth.test.js && node test/auth.integration.test.js && node test/admin-auth.integration.test.js && node test/gateway.integration.test.js && node test/responses-native.integration.test.js && node test/stream.integration.test.js && node test/model-selection.integration.test.js && node test/upstream-cleanup.integration.test.js && node test/retry.integration.test.js && node test/thinking.integration.test.js && node test/model-case.integration.test.js && node test/diagnostics.test.js && node test/output-guard.integration.test.js"
+    "test": "node test/branding.test.js && node test/brand-migration.test.js && node test/endpoint-routing.test.js && node test/endpoint-routing.integration.test.js && node test/protocol.test.js && node test/modalities.test.js && node test/modalities.integration.test.js && node test/errors.test.js && node test/metrics.test.js && node test/metrics-range.integration.test.js && node test/log-search.integration.test.js && node test/routing.test.js && node test/model-groups.test.js && node test/key-access.test.js && node test/key-access.integration.test.js && node test/balance.test.js && node test/client-identity.test.js && node test/admin-auth.test.js && node test/admin-users.test.js && node test/update-checker.test.js && node test/release-notes.test.js && node test/desktop-clients.test.js && node test/integration-auth.test.js && node test/oauth.test.js && node test/oauth.integration.test.js && node test/auth.integration.test.js && node test/admin-auth.integration.test.js && node test/gateway.integration.test.js && node test/responses-native.integration.test.js && node test/stream.integration.test.js && node test/model-selection.integration.test.js && node test/upstream-cleanup.integration.test.js && node test/retry.integration.test.js && node test/thinking.integration.test.js && node test/model-case.integration.test.js && node test/diagnostics.test.js && node test/output-guard.integration.test.js"
   },
   "engines": {
     "node": ">=18"

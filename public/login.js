@@ -8,14 +8,13 @@ const usernameInput = document.querySelector('#loginUsername');
 const passwordInput = document.querySelector('#loginPassword');
 const submitButton = document.querySelector('#passwordLoginButton');
 
-function safeReturnTo(value) {
-  const path = String(value || '/').trim();
-  return path.startsWith('/') && !path.startsWith('//') && path.length <= 1000 ? path : '/';
-}
+const { safeReturnTo } = window.AuthUtils;
 
 const query = new URLSearchParams(window.location.search);
 const returnTo = safeReturnTo(query.get('returnTo'));
-loginButton.href = `/auth/oidc/login?returnTo=${encodeURIComponent(returnTo)}`;
+const requireAccount = query.get('account') === '1' || new URL(returnTo, window.location.origin).pathname === '/oauth/authorize';
+loginButton.href = `/auth/oidc/login?returnTo=${encodeURIComponent(returnTo)}${requireAccount ? '&account=1' : ''}`;
+if (requireAccount) document.querySelector('.login-card-subtitle').textContent = '请登录网关账号，登录后还需确认第三方应用的授权范围';
 
 function setStatus(label, message, state = 'loading') {
   statusElement.className = `login-status ${state}`;
@@ -70,7 +69,7 @@ async function submitPassword(event) {
       return;
     }
     setStatus('身份验证成功', '正在进入管理后台…', 'success');
-    window.location.replace(safeReturnTo(body.returnTo) || returnTo);
+    window.location.replace(safeReturnTo(body.returnTo ?? returnTo));
   } catch (error) {
     showError(error.message || '无法连接本地网关，请稍后重试');
   } finally {
@@ -85,7 +84,7 @@ async function checkSession() {
   setStatus('正在检查网关会话', '检测登录状态…');
   showError(query.get('error'));
   try {
-    const response = await fetch('/auth/status', { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const response = await fetch(`/auth/status${requireAccount ? '?account=1' : ''}`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
     const status = await response.json().catch(() => ({}));
     if (status.authenticated) {
       setStatus('身份验证成功', '正在进入管理后台…', 'success');

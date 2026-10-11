@@ -841,6 +841,7 @@ function renderLogDetailRow(diag) {
 }
 
 function renderLogRow(entry) {
+  const hasDiag = Boolean(entry.diagnostics && typeof entry.diagnostics === 'object');
   const upstreamError = entry.upstreamError || null;
   const errorParts = [];
   if (entry.error) errorParts.push(entry.error);
@@ -1045,6 +1046,7 @@ async function loadConfig() {
     fillDefaultRangeInputs();
     render();
     switchTab(state.activeTab || 'overview');
+    window.dispatchEvent(new Event('gateway-config-loaded'));
   } catch (error) {
     $('#dashboard').classList.add('hidden');
     setMessage(error.message, 'error');
@@ -1456,21 +1458,25 @@ function renderIntegrations() {
   if (!container) return;
   const items = Array.isArray(state.integrations) ? state.integrations : [];
   if (!items.length) {
-    container.innerHTML = '<div class="empty">还没有第三方接入授权。外部软件填入网关地址和本地 Key 后会出现在这里。</div>';
+    container.innerHTML = '<div class="empty">还没有第三方接入。支持 API Key 接入，或登记应用后通过网关账号登录授权。</div>';
     return;
   }
   container.innerHTML = items.map((item) => {
     const cancelled = item.status === 'cancelled';
+    const oauth = item.type === 'oauth';
+    const status = cancelled ? '<span class="tag off">已取消</span>' : (oauth && !item.active ? '<span class="tag off">已失效</span>' : '<span class="tag active">已授权</span>');
     const keyName = item.sourceKey ? `${escapeHtml(item.sourceKey.name)}${item.sourceKey.enabled ? '' : '（已停用）'}` : '<span class="muted">来源 Key 已删除</span>';
     const verified = item.lastVerifiedAt ? `最近验证：${escapeHtml(new Date(item.lastVerifiedAt).toLocaleString())}` : '';
     const failed = item.lastFailureAt ? `最近失败：${escapeHtml(new Date(item.lastFailureAt).toLocaleString())}${item.lastFailureReason ? `（${escapeHtml(item.lastFailureReason)}）` : ''}` : '';
-    return `<article class="item-card"><div><div class="item-title">${escapeHtml(item.label || '未命名接入')}${cancelled ? '<span class="tag off">已取消</span>' : '<span class="tag active">已授权</span>'}</div><div class="item-meta"><span>来源 Key：${keyName}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span><span>成功 ${item.successCount} 次 · 失败 ${item.failureCount} 次</span>${verified ? `<span>${verified}</span>` : ''}${failed ? `<span class="error-text">${failed}</span>` : ''}</div>${item.lastFailureReason && cancelled ? `<div class="item-meta"><span class="muted">取消原因：${escapeHtml(item.lastFailureReason)}</span></div>` : ''}</div><div class="item-actions">${cancelled ? '' : `<button class="text-button delete" data-action="revoke-integration" data-id="${escapeHtml(item.id)}">取消授权</button>`}</div></article>`;
+    const identity = oauth ? `<span>账号：${escapeHtml(item.account)}</span><span>范围：${escapeHtml((item.scopes || []).join('、'))}</span><span>有效期至 ${escapeHtml(formatTime(item.expiresAt))}</span>` : `<span>成功 ${item.successCount} 次 · 失败 ${item.failureCount} 次</span>`;
+    return `<article class="item-card oauth-client-card"><div><div class="item-title">${escapeHtml(item.label || '未命名接入')}${status}<span class="small-tag">${oauth ? '账号授权' : 'API Key 接入'}</span></div><div class="item-meta"><span>来源 Key：${keyName}</span><span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span>${identity}${verified ? `<span>${verified}</span>` : ''}${failed ? `<span class="error-text">${failed}</span>` : ''}</div>${item.lastFailureReason && cancelled ? `<div class="item-meta"><span class="muted">取消原因：${escapeHtml(item.lastFailureReason)}</span></div>` : ''}</div><div class="item-actions">${cancelled ? '' : `<button class="text-button delete" data-action="revoke-integration" data-id="${escapeHtml(item.id)}">取消授权</button>`}</div></article>`;
   }).join('');
 }
 
 async function revokeIntegration(item) {
   if (!item) return;
-  if (!window.confirm(`确认取消「${item.label || '未命名接入'}」的授权吗？对方将不能再刷新配置，已签发的调用仍按本地 Key 权限处理。`)) return;
+  const consequence = item.type === 'oauth' ? '对方的模型访问令牌与刷新令牌将立即失效。' : '对方将不能再刷新配置，直接使用原始 API Key 的调用不受影响。';
+  if (!window.confirm(`确认取消「${item.label || '未命名接入'}」的授权吗？${consequence}`)) return;
   try {
     await api(`/api/admin/integrations/${encodeURIComponent(item.id)}/revoke`, { method: 'POST', body: '{}' });
     toast('已取消该接入授权');
@@ -1486,7 +1492,7 @@ async function handleListClick(event) {
   const item = (button.dataset.action.includes('upstream') ? state.config.upstreams : button.dataset.action.includes('route') ? state.config.routes : state.config.localApiKeys).find((candidate) => candidate.id === button.dataset.id);
   if (button.dataset.action === 'edit-upstream') fillUpstreamForm(item);
   if (button.dataset.action === 'edit-route') fillRouteForm(item);
-  if (button.dataset.action === 'revoke-integration') await revokeIntegration(item);
+  if (button.dataset.action === 'revoke-integration') await revokeIntegration(state.integrations?.find((candidate) => candidate.id === button.dataset.id));
   if (button.dataset.action === 'edit-key') fillKeyEditForm(item);
   if (button.dataset.action === 'toggle-key') await toggleKey(item);
   if (button.dataset.action === 'copy-key') await copyLocalKey(item);
@@ -1821,6 +1827,7 @@ $('#usageFileInput').addEventListener('change', async (event) => {
 $('#checkUpdateButton').addEventListener('click', checkForUpdates);
 $('#viewChangelogButton')?.addEventListener('click', viewChangelog);
 $('#refreshIntegrationsButton')?.addEventListener('click', loadIntegrations);
+window.addEventListener('oauth-clients-changed', loadIntegrations);
 $('#syncAllModelsButton').addEventListener('click', syncAllModels);
 $('#probeThinkingButton').addEventListener('click', probeAllThinking);
 $('#saveModelSelectionsButton').addEventListener('click', saveModelSelections);

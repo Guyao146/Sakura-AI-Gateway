@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>账号授权 · Sakura-AI-Gateway</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="oauth-page">
+    <section class="panel oauth-consent" aria-labelledby="authorizeHeading">
+      <div class="eyebrow">Sakura-AI-Gateway · 账号授权</div>
+      <h1 id="authorizeHeading">确认第三方接入</h1>
+      <p id="authorizeStatus" class="help" role="status">正在检查授权请求…</p>
+      <div id="authorizeError" class="login-error hidden" role="alert"></div>
+      <a id="authorizeLogin" class="button primary hidden" href="/auth/login?account=1">登录网关账号</a>
+      <form id="authorizeForm" class="hidden">
+        <dl class="oauth-details">
+          <div><dt>应用名称</dt><dd id="authorizeClient"></dd></div>
+          <div><dt>当前账号</dt><dd id="authorizeAccount"></dd></div>
+          <div><dt>回调地址</dt><dd><code id="authorizeRedirect"></code></dd></div>
+          <div><dt>权限来源</dt><dd id="authorizeSource"></dd></div>
+        </dl>
+        <h3>应用请求以下权限</h3>
+        <ul id="authorizeScopes" class="oauth-scopes"></ul>
+        <details class="oauth-models"><summary id="authorizeModelSummary">可用模型</summary><ul id="authorizeModels"></ul></details>
+        <p id="authorizeModelNotice" class="help"></p>
+        <p class="help">仅在你信任此应用和回调地址时允许。应用不会获得你的账号密码、原始 API Key 或后台管理权限。访问令牌有效期 1 小时；持续连接授权最长 30 天，可随时在网关后台撤销。</p>
+        <div class="dialog-actions">
+          <button id="denyAuthorization" type="button" class="button secondary">拒绝</button>
+          <button id="approveAuthorization" type="submit" class="button primary">允许授权</button>
+        </div>
+      </form>
+      <a class="oauth-back" href="/">返回网关</a>
+    </section>
+  </main>
+  <script src="/auth-utils.js"></script>
+  <script src="/authorize.js"></script>
+</body>
+</html>

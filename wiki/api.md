@@ -4,10 +4,13 @@
 
 | 接口范围 | 鉴权方式 |
 | --- | --- |
-| `/v1/*`（模型调用） | 后台创建的本地 API Key，`Authorization: Bearer <key>` 或 `x-api-key: <key>` |
+| `/v1/*`（模型调用） | 本地 API Key 或 OAuth 访问令牌，`Authorization: Bearer <token>` 或 `x-api-key: <token>` |
 | `/api/admin/*`（管理） | 本机回环访问免认证；远程必须登录（Authentik OIDC 会话 Cookie 或本地账号密码会话 Cookie） |
 | `/health` | 无鉴权 |
 | `/auth/*` | 无鉴权（登录/登出流程本身） |
+| `/oauth/consent`、`/oauth/grants*` | 必须有本地账号／OIDC 会话，不接受回环免登录代替账号；写操作要求同源 Origin |
+| `/oauth/token`、`/oauth/revoke` | 授权码 + S256 PKCE／刷新令牌或待撤销令牌，不接受管理 Cookie 代替凭据 |
+| `/.well-known/oauth-authorization-server` | 公开元数据，远程必须 HTTPS |
 
 所有模型调用响应都携带 `x-request-id`，JSON 响应体还会在首层携带 `request_id`
 （客户端提供合法值时沿用，否则自动生成），
@@ -218,14 +221,39 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 ### 第三方接入授权
 
-供外部软件（如桌面客户端、IDE 插件）把本网关添加为其上游，无需进入后台手动复制 Key：
+第三方可使用账号授权，不复制 Key；旧 API Key 接入也继续保留。两种方式不可混用令牌，完整接入步骤见[第三方接入指南](integration.md)。
+
+#### OAuth 2.0 账号授权
+
+| 方法 | 路径 | 参数／响应 |
+| --- | --- | --- |
+| GET | `/.well-known/oauth-authorization-server` | issuer、authorization/token/revocation 端点、scope、S256 与 `none` 客户端认证元数据 |
+| GET | `/oauth/authorize` | 浏览器同意页；`response_type=code`、`client_id`、准确的 `redirect_uri`、随机 `state`、`code_challenge`、`code_challenge_method=S256`、可选 `scope` |
+| GET | `/oauth/consent` | 同意页内部接口，参数同授权请求；返回应用、账号、权限和一次性确认参数；未登录返回 401 与 `login_url` |
+| POST | `/oauth/consent` | 同源 JSON `{request_id, csrf_token, approve: true/false}`；返回白名单回调 `redirect`，含 code 或 access_denied、state、iss |
+| POST | `/oauth/token` | 换码：`grant_type=authorization_code`、`client_id`、`code`、`redirect_uri`、`code_verifier`；刷新：`grant_type=refresh_token`、`client_id`、`refresh_token`、可选缩小的 scope |
+| POST | `/oauth/revoke` | `client_id`、`token`（访问或刷新令牌）；撤销整条授权，未知令牌同样返回 200 `{}` |
+| GET | `/oauth/grants` | 当前账号自己的授权公开列表，不包含令牌或哈希 |
+| POST | `/oauth/grants/revoke` | 同源 JSON `{id}`，只能撤销本账号的授权 |
+| GET / POST | `/api/admin/oauth-clients` | 管理应用列表／登记应用；POST JSON `{name, sourceKeyId, redirectUris, enabled?}`，返回 `{client}` |
+| PUT / DELETE | `/api/admin/oauth-clients/:id` | 编辑／删除应用；编辑字段同 POST，缺省保留；所有修改撤销已有授权 |
+
+Token 与 revoke 接受 `application/x-www-form-urlencoded` 或 JSON，Token 字段均须字符串；不支持 Basic／Client Secret、密码模式、隐式模式或 `client_credentials`。请求体最多 16 KiB，重复表单／授权查询参数报 400。授权码仅 2 分钟有效，不能重复兑换。
+
+scope：`models:read` 允许 `/v1/models` 和 `/api/integration/config`，`models:invoke` 允许三种模型调用接口，`offline_access` 允许刷新；省略时默认前两项。访问令牌 1 小时，刷新授权绝对期限 30 天；返回 `access_token`、`token_type`、`expires_in`、`scope`，有持续连接权限时额外返回 `refresh_token` 与 `refresh_token_expires_in`。每次刷新使原访问／刷新令牌失效，旧刷新令牌重放撤销整条授权。
+
+OAuth 服务响应禁止缓存；错误使用标准顶层 `error` 字符串及 `error_description`，**不使用模型接口的错误前缀格式**。`invalid_request` / `invalid_scope` / `invalid_client` / `invalid_grant` 通常返回 400，未登录返回 401，确认来源错误返回 403，超限返回 429。非法回调在网关直接报错，绝不跳往未登记地址。
+
+OAuth 访问 `/api/integration/config` 复用原配置结构，额外包含 `authorization: {id, type: "oauth", scopes}`，不返回任何原始 Key。`/api/admin/integrations` 同时包含旧登记及 `type: "oauth"` 授权；账号授权额外有 `clientId`、`account`、`scopes`、`active`、`expiresAt`。原 `/api/admin/integrations/:id/revoke` 同样支持撤销账号授权。
+
+#### API Key 接入（兼容）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/integration/verify` | 外部项目填网关地址 + 本地 Key：校验权限、登记接入、拉取模型配置 |
-| GET | `/api/integration/config` | 已接入后刷新配置：可用接入令牌或本地 API Key 认证 |
+| GET | `/api/integration/config` | 已接入后刷新配置：可用旧接入令牌、本地 API Key 或有 models:read 的 OAuth 访问令牌 |
 | POST | `/api/integration/revoke` | 凭令牌自助注销接入 |
-| GET | `/api/integration/status` | 接入方凭令牌查看自己的授权状态（只含哈希，无明文） |
+| GET | `/api/integration/status` | 接入方凭旧登记令牌查看自己的接入状态，不返回哈希或令牌明文 |
 
 接入流程：外部项目把用户填写的地址作为根（如 `https://gateway.example.com`），调用
 `POST {根地址}/api/integration/verify`，body 为 `{ apiKey, label? }`。`apiKey` 必须是网关本地已启用且

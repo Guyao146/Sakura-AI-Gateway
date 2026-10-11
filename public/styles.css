@@ -366,6 +366,28 @@ dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
 .login-button { display: block; width: 100%; text-align: center; text-decoration: none; }
 .login-error { margin-top: 16px; padding: 12px 14px; border: 1px solid #704538; border-radius: 9px; background: rgba(82, 40, 31, .4); color: #ffad9e; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .login-help { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; line-height: 1.7; }
+.oauth-page { width: min(760px, calc(100% - 32px)); margin: 32px auto; }
+.oauth-consent h1 { font-size: clamp(24px, 5vw, 36px); line-height: 1.3; margin-top: 14px; }
+.oauth-consent h3 { margin-top: 22px; }
+.oauth-consent #authorizeLogin { display: inline-block; margin-top: 20px; text-decoration: none; }
+.oauth-consent #authorizeLogin.hidden { display: none; }
+.oauth-details { margin: 24px 0; display: grid; gap: 14px; }
+.oauth-details > div { min-width: 0; }
+.oauth-details dt { color: var(--muted); font-size: 12px; }
+.oauth-details dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.oauth-details code { white-space: pre-wrap; }
+.oauth-scopes { padding-left: 22px; line-height: 1.9; }
+.oauth-models { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.oauth-models ul { max-height: 240px; overflow-y: auto; padding-left: 22px; overflow-wrap: anywhere; }
+.oauth-models summary { cursor: pointer; }
+.oauth-back { display: inline-block; margin-top: 24px; color: var(--accent); }
+.oauth-client-card { grid-template-columns: minmax(0, 1fr) auto; }
+.oauth-client-card code, .oauth-client-card .item-meta { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .oauth-client-card { grid-template-columns: minmax(0, 1fr); }
+  .oauth-client-card .item-actions { grid-column: 1; }
+  .oauth-consent { padding: 18px; }
+}
 @keyframes login-spin { to { transform: rotate(360deg); } }
 /* Visual polish stays CSS-only: no observers, timers, or external assets. */
 body { background: radial-gradient(ellipse at 85% 0%, #21493677, transparent 42rem), radial-gradient(ellipse at 0% 42%, #16382d33, transparent 35rem), var(--bg); line-height: 1.5; }

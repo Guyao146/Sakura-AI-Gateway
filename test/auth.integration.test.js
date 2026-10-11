@@ -11,7 +11,7 @@ const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-a
 const gatewayPort = 24000 + Math.floor(Math.random() * 1000);
 const clientId = 'sakura-ai-gateway-test';
 const clientSecret = 'test-client-secret';
-const remoteHeaders = { Host: 'gateway.example.test', 'X-Forwarded-For': '203.0.113.42' };
+const remoteHeaders = { Host: 'gateway.example.test', 'X-Forwarded-For': '203.0.113.42', 'X-Forwarded-Proto': 'https' };
 const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const publicJwk = { ...publicKey.export({ format: 'jwk' }), use: 'sig', alg: 'RS256', kid: 'auth-test-key' };
 
@@ -130,7 +130,7 @@ async function main() {
   await new Promise((resolve) => oidc.listen(0, '127.0.0.1', resolve));
   const oidcPort = oidc.address().port;
   const issuer = `http://127.0.0.1:${oidcPort}/application/o/gateway`;
-  const redirectUri = `http://gateway.example.test/auth/oidc/callback`;
+  const redirectUri = 'https://gateway.example.test/auth/oidc/callback';
   const gateway = spawn(process.execPath, ['src/server.js'], {
     cwd: projectRoot,
     env: {
@@ -188,7 +188,22 @@ async function main() {
     assert.match(unavailablePage.raw, /使用外部 OIDC 提供商登录/);
 
     discoveryAvailable = true;
-    const login = await request(`${baseUrl}/auth/oidc/login?returnTo=%2F`, { headers: remoteHeaders });
+    const appResult = await request(`${baseUrl}/api/admin/oauth-clients`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'OIDC third-party client', sourceKeyId: storedConfig.localApiKeys[0].id, redirectUris: ['https://app.example.test/callback'] })
+    });
+    assert.equal(appResult.status, 201, appResult.raw);
+    const app = appResult.json.client;
+    const appVerifier = crypto.randomBytes(32).toString('base64url');
+    const appParams = new URLSearchParams({ client_id: app.id, redirect_uri: app.redirectUris[0], response_type: 'code', state: 'app-state',
+      code_challenge: crypto.createHash('sha256').update(appVerifier).digest('base64url'), code_challenge_method: 'S256', scope: 'models:read offline_access' });
+    const appReturnTo = `/oauth/authorize?${appParams}`;
+    const appAnonymous = await request(`${baseUrl}/oauth/consent?${appParams}`, { headers: remoteHeaders });
+    assert.equal(appAnonymous.status, 401, appAnonymous.raw);
+    assert.equal(appAnonymous.json.error, 'login_required');
+    const noHttps = await request(`${baseUrl}/oauth/authorize?${appParams}`, { headers: { ...remoteHeaders, 'X-Forwarded-Proto': 'http' } });
+    assert.equal(noHttps.status, 400, 'OIDC 配置为 HTTPS 不能让明文 HTTP 请求冒充 HTTPS');
+    const login = await request(`${baseUrl}/auth/oidc/login?account=1&returnTo=${encodeURIComponent(appReturnTo)}`, { headers: remoteHeaders });
     assert.equal(login.status, 302, login.raw);
     assert.equal(discoveryRequests, 2);
     const authorizationUrl = new URL(login.headers.location);
@@ -212,7 +227,7 @@ async function main() {
       headers: { ...remoteHeaders, Cookie: transactionCookie }
     });
     assert.equal(callback.status, 302, `${callback.raw}\n${stderr}`);
-    assert.equal(callback.headers.location, '/');
+    assert.equal(callback.headers.location, appReturnTo, 'OIDC 登录后必须完整返回第三方同意页');
     assert.equal(tokenRequests, 1);
     const sessionCookie = cookiePair(callback.headers['set-cookie'], 'sakura_ai_gateway_admin_session');
     assert.ok(sessionCookie, '回调应建立 HttpOnly 管理会话');
@@ -237,7 +252,7 @@ async function main() {
     assert.equal(remoteWriteWithoutOrigin.status, 403, '远程会话写操作必须包含同源 Origin');
     const remoteWrite = await request(`${baseUrl}/api/admin/settings`, {
       method: 'PUT',
-      headers: { ...remoteHeaders, Cookie: sessionCookie, Origin: 'http://gateway.example.test', 'Content-Type': 'application/json' },
+      headers: { ...remoteHeaders, Cookie: sessionCookie, Origin: 'https://gateway.example.test', 'Content-Type': 'application/json' },
       body: JSON.stringify({ upstreamTimeoutMs: 600000 })
     });
     assert.equal(remoteWrite.status, 200, remoteWrite.raw);
@@ -249,12 +264,44 @@ async function main() {
     });
     assert.equal(remoteModelsWithKey.status, 200, remoteModelsWithKey.raw);
 
+    const consentResult = await request(`${baseUrl}/oauth/consent?${appParams}`, { headers: { ...remoteHeaders, Cookie: sessionCookie } });
+    assert.equal(consentResult.status, 200, consentResult.raw);
+    assert.equal(consentResult.json.user.username, 'gateway-admin');
+    const appConsent = consentResult.json;
+    const approval = await request(`${baseUrl}/oauth/consent`, {
+      method: 'POST', headers: { ...remoteHeaders, Cookie: sessionCookie, Origin: 'https://gateway.example.test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: appConsent.request_id, csrf_token: appConsent.csrf_token, approve: true })
+    });
+    assert.equal(approval.status, 200, approval.raw);
+    const appCallback = new URL(approval.json.redirect);
+    assert.equal(appCallback.searchParams.get('state'), 'app-state');
+    assert.equal(appCallback.searchParams.get('iss'), 'https://gateway.example.test');
+    const appExchange = await request(`${baseUrl}/oauth/token`, {
+      method: 'POST', headers: { ...remoteHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: app.id, redirect_uri: app.redirectUris[0], code_verifier: appVerifier, code: appCallback.searchParams.get('code') }).toString()
+    });
+    assert.equal(appExchange.status, 200, appExchange.raw);
+    const appToken = appExchange.json.access_token;
+    assert.equal(appExchange.json.id_token, undefined, '网关仅签发模型访问令牌，不充当新的 OIDC 身份提供商');
+    const appHeaders = { ...remoteHeaders, Authorization: `Bearer ${appToken}` };
+    const appConfig = await request(`${baseUrl}/api/integration/config`, { headers: appHeaders });
+    assert.equal(appConfig.status, 200, appConfig.raw);
+    assert(!appConfig.raw.includes(storedConfig.localApiKeys[0].key));
+    assert.equal((await request(`${baseUrl}/api/admin/config`, { headers: { ...appHeaders, Cookie: sessionCookie } })).status, 403);
+
     const logout = await request(`${baseUrl}/auth/logout`, {
       headers: { ...remoteHeaders, Cookie: sessionCookie }
     });
     assert.equal(logout.status, 302);
     assert.match(logout.headers.location, /\/end-session\?/);
     assert.equal((await request(`${baseUrl}/api/admin/config`, { headers: { ...remoteHeaders, Cookie: sessionCookie } })).status, 401);
+    assert.equal((await request(`${baseUrl}/api/integration/config`, { headers: appHeaders })).status, 200, '退出浏览器会话不等同于撤销独立的持续连接授权');
+    const appRevoke = await request(`${baseUrl}/oauth/revoke`, {
+      method: 'POST', headers: { ...remoteHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ client_id: app.id, token: appExchange.json.refresh_token }).toString()
+    });
+    assert.equal(appRevoke.status, 200, appRevoke.raw);
+    assert.equal((await request(`${baseUrl}/api/integration/config`, { headers: appHeaders })).status, 401);
     console.log('auth integration tests passed');
   } catch (error) {
     throw new Error(`${error.message}\n${stderr}`);
