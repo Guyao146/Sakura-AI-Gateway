@@ -2,11 +2,17 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const { verifyPassword } = require('./admin-users');
 const { safeReturnTo } = require('../public/auth-utils');
+const {
+  SESSION_COOKIE,
+  SESSION_TTL_SECONDS,
+  createSessionToken,
+  verifySessionToken,
+  revokeSessionToken
+} = require('./admin-session');
 
-const SESSION_COOKIE = 'sakura_ai_gateway_admin_session';
 const TRANSACTION_COOKIE = 'sakura_ai_gateway_oidc_state';
 const TRANSACTION_TTL_MS = 10 * 60 * 1000;
-const DISCOVERY_TTL_MS = 60 * 60 * 1000;
+const DISCOVERY_TTL_MS = 10 * 60 * 1000;
 const CLOCK_TOLERANCE_SECONDS = 60;
 
 function normalizeAddress(value) {
@@ -118,7 +124,7 @@ class AdminAuth {
     this.redirectUri = String(options.redirectUri ?? env.AUTHENTIK_REDIRECT_URI ?? '').trim();
     this.scopes = String(options.scopes ?? env.AUTHENTIK_SCOPES ?? 'openid profile email').trim() || 'openid profile email';
     this.tokenAuthMethod = String(options.tokenAuthMethod ?? env.AUTHENTIK_TOKEN_AUTH_METHOD ?? '').trim();
-    this.sessionTtlSeconds = positiveInteger(options.sessionTtlSeconds ?? env.AUTHENTIK_SESSION_TTL_SECONDS, 8 * 60 * 60, 300, 7 * 24 * 60 * 60);
+    this.sessionTtlSeconds = positiveInteger(options.sessionTtlSeconds ?? env.AUTHENTIK_SESSION_TTL_SECONDS, SESSION_TTL_SECONDS, 300, 7 * 24 * 60 * 60);
     this.trustedProxies = trustedProxySet(options.trustedProxies ?? env.TRUSTED_PROXY_ADDRESSES);
     this.fetch = options.fetch || globalThis.fetch;
     this.log = typeof options.log === 'function' ? options.log : () => {};
@@ -127,31 +133,23 @@ class AdminAuth {
     })();
     const secureSetting = String(options.cookieSecure ?? env.AUTHENTIK_COOKIE_SECURE ?? '').toLowerCase();
     this.cookieSecure = secureSetting ? secureSetting !== 'false' && secureSetting !== '0' : redirectIsHttps;
-    this.sessions = new Map();
     this.transactions = new Map();
     this.discoveryCache = null;
     this.jwksCache = null;
-    this.getAdminAuth = typeof options.getAdminAuth === 'function' ? options.getAdminAuth : () => ({ remoteMode: 'oidc', users: [] });
+    this.getAdminAuth = typeof options.getAdminAuth === 'function' ? options.getAdminAuth : () => ({ users: [] });
     this.loginFailures = new Map();
   }
 
   localAuthConfig() {
     const value = this.getAdminAuth() || {};
     return {
-      remoteMode: value.remoteMode === 'password' ? 'password' : 'oidc',
       requireLocalLogin: value.requireLocalLogin === true,
       users: Array.isArray(value.users) ? value.users.filter((item) => item && item.id && item.username && item.passwordHash) : []
     };
   }
 
-  remoteMode() {
-    return this.localAuthConfig().remoteMode;
-  }
-
   requireLocalLogin() {
-    return this.localAuthConfig().requireLocalLogin === true
-      && this.remoteMode() === 'password'
-      && this.isPasswordConfigured();
+    return this.localAuthConfig().requireLocalLogin === true && (this.isPasswordConfigured() || this.isConfigured());
   }
 
   enabledLocalUsers() {
@@ -163,13 +161,12 @@ class AdminAuth {
   }
 
   remoteConfigured() {
-    return this.remoteMode() === 'password' ? this.isPasswordConfigured() : this.isConfigured();
+    return this.isPasswordConfigured() || this.isConfigured();
   }
 
   remoteConfigurationError() {
-    if (this.remoteMode() !== 'password') return this.configurationError();
-    if (!this.isPasswordConfigured()) return '远程管理访问已切换到本地账号认证，但还没有可用的管理员账号；请在本机回环访问后台创建。';
-    return '';
+    if (this.remoteConfigured()) return '';
+    return [this.configurationError(), '还没有可用的本地管理员账号；请在本机回环访问后台创建'].filter(Boolean).join('；');
   }
 
   failureKey(req) {
@@ -207,9 +204,9 @@ class AdminAuth {
   }
 
   async loginWithPassword(req, credentials = {}) {
-    if (this.remoteMode() !== 'password') {
-      const error = new Error('当前远程管理认证方式为 Authentik，不能使用账号密码登录');
-      error.statusCode = 409;
+    if (!this.isPasswordConfigured()) {
+      const error = new Error('还没有可用的本地管理员账号，无法使用账号密码登录');
+      error.statusCode = 503;
       throw error;
     }
     const locked = this.checkLoginLockout(req);
@@ -225,32 +222,30 @@ class AdminAuth {
       throw error;
     }
     this.clearLoginFailures(req);
-    const now = Date.now();
-    const sessionId = crypto.randomBytes(32).toString('base64url');
     const userClaims = {
       sub: `local:${user.id}`,
       username: user.username,
       name: user.username,
       email: ''
     };
-    this.sessions.set(sessionId, {
-      user: userClaims,
+    const credentialVersion = crypto.createHash('sha256').update(user.passwordHash).digest('hex');
+    const sessionToken = createSessionToken({
       mode: 'password',
+      user: userClaims,
+      credentialVersion,
       originHost: String(req.headers.host || '').toLowerCase(),
-      credentialVersion: crypto.createHash('sha256').update(user.passwordHash).digest('hex'),
-      expiresAt: now + this.sessionTtlSeconds * 1000,
-      createdAt: now
+      sessionEpoch: Number(user.sessionEpoch) || 0,
+      ttlSeconds: this.sessionTtlSeconds
     });
     this.log('管理员已登录（本地账号）', { username: user.username, source: 'password' });
     return {
       user: userClaims,
-      cookie: this.cookie(SESSION_COOKIE, sessionId, this.sessionTtlSeconds)
+      cookie: this.cookie(SESSION_COOKIE, sessionToken, this.sessionTtlSeconds)
     };
   }
 
   localUsersSummary() {
     return {
-      remoteMode: this.remoteMode(),
       requireLocalLogin: this.localAuthConfig().requireLocalLogin === true,
       oidcConfigured: this.isConfigured(),
       users: this.localAuthConfig().users.map((item) => ({
@@ -295,27 +290,35 @@ class AdminAuth {
 
   cleanup() {
     const now = Date.now();
-    for (const [id, session] of this.sessions) if (session.expiresAt <= now) this.sessions.delete(id);
     for (const [state, transaction] of this.transactions) if (transaction.expiresAt <= now) this.transactions.delete(state);
   }
 
+  // 无状态签名令牌：校验签名与有效期，再按登录方式核对当前凭据版本。
   sessionForRequest(req) {
-    this.cleanup();
-    const sessionId = parseCookies(req.headers?.cookie)[SESSION_COOKIE];
-    if (!sessionId) return null;
-    const session = this.sessions.get(sessionId);
-    if (!session || session.expiresAt <= Date.now()) {
-      if (sessionId) this.sessions.delete(sessionId);
+    const token = parseCookies(req.headers?.cookie)[SESSION_COOKIE];
+    const claims = verifySessionToken(token);
+    if (!claims) return null;
+    if (claims.mode === 'password') {
+      const user = this.enabledLocalUsers().find((item) => `local:${item.id}` === claims.sub);
+      if (!user) return null;
+      const credentialVersion = crypto.createHash('sha256').update(user.passwordHash).digest('hex');
+      if (claims.credentialVersion !== credentialVersion) return null;
+      if (Number(claims.sessionEpoch || 0) !== Number(user.sessionEpoch || 0)) return null;
+    } else if (claims.mode === 'oidc') {
+      if (!this.isConfigured()) return null;
+      const credentialVersion = crypto.createHash('sha256').update(`${this.issuerUrl}:${this.clientId}`).digest('hex');
+      if (claims.credentialVersion !== credentialVersion) return null;
+    } else {
       return null;
     }
-    if (session.mode === 'password') {
-      const user = this.enabledLocalUsers().find((item) => `local:${item.id}` === session.user.sub);
-      if (!user || session.credentialVersion !== crypto.createHash('sha256').update(user.passwordHash).digest('hex')) {
-        this.sessions.delete(sessionId);
-        return null;
-      }
-    }
-    return { id: sessionId, ...session };
+    return {
+      id: token,
+      mode: claims.mode,
+      user: { sub: claims.sub, username: claims.username, name: claims.name, email: claims.email },
+      originHost: claims.originHost || '',
+      expiresAt: claims.exp * 1000,
+      createdAt: claims.iat * 1000
+    };
   }
 
   authenticate(req, { requireAccount = false } = {}) {
@@ -325,7 +328,7 @@ class AdminAuth {
     }
     const session = this.sessionForRequest(req);
     if (session) return { ok: true, mode: session.mode || 'oidc', source, session, user: session.user, configured: this.remoteConfigured() };
-    return { ok: false, mode: this.remoteMode(), source, configured: this.remoteConfigured(), localLoginRequired: this.requireLocalLogin() };
+    return { ok: false, mode: '', source, configured: this.remoteConfigured(), localLoginRequired: this.requireLocalLogin() };
   }
 
   async fetchJson(url, options = {}) {
@@ -354,9 +357,23 @@ class AdminAuth {
     if (!this.isConfigured()) throw oidcError(this.configurationError(), 503);
     if (this.discoveryCache?.expiresAt > Date.now()) return this.discoveryCache.value;
     const discoveryUrl = `${this.issuerUrl}/.well-known/openid-configuration`;
-    const value = await this.fetchJson(discoveryUrl);
+    // 发现文档不可达时回落到约定路径；非约定部署必须提供发现文档。
+    const fallback = {
+      issuer: this.issuerUrl,
+      authorization_endpoint: `${this.issuerUrl}/authorize`,
+      token_endpoint: `${this.issuerUrl}/token`,
+      userinfo_endpoint: `${this.issuerUrl}/userinfo`
+    };
+    let value;
+    try {
+      value = await this.fetchJson(discoveryUrl);
+    } catch (error) {
+      this.log('Authentik discovery 不可达，回落到约定端点', { message: error.message });
+      value = fallback;
+    }
+    if (!value || typeof value !== 'object') value = fallback;
     const issuerMatches = String(value.issuer || '').replace(/\/+$/, '') === this.issuerUrl;
-    if (!issuerMatches || !value.authorization_endpoint || !value.token_endpoint || !value.jwks_uri) {
+    if (!issuerMatches || !value.authorization_endpoint || !value.token_endpoint) {
       throw oidcError('Authentik OIDC discovery 响应缺少必要端点或 issuer 不匹配');
     }
     this.discoveryCache = { value, expiresAt: Date.now() + DISCOVERY_TTL_MS };
@@ -470,7 +487,7 @@ class AdminAuth {
     return claims;
   }
 
-  async finishLogin(params, cookieHeader) {
+  async finishLogin(params, cookieHeader, req = null) {
     this.cleanup();
     if (params.error) throw oidcError(`Authentik 登录失败：${params.error_description || params.error}`, 401);
     const state = String(params.state || '');
@@ -480,12 +497,56 @@ class AdminAuth {
     this.transactions.delete(state);
     if (!params.code) throw oidcError('Authentik 回调缺少授权码', 400);
     const discovery = await this.discovery();
+    const tokens = await this.exchangeCode(params.code, transaction.codeVerifier, discovery);
+    // 返回 ID Token 时必须先校验签名、issuer/audience、有效期和 nonce，
+    // userinfo 仅提供优先展示的资料，不能绕过身份验证或替换登录主体。
+    const idClaims = tokens.id_token !== undefined
+      ? await this.verifyIdToken(tokens.id_token, transaction.nonce, discovery) : null;
+    let claims = null;
+    if (discovery.userinfo_endpoint && tokens.access_token) {
+      try {
+        claims = await this.fetchUserInfo(tokens.access_token, discovery);
+      } catch (error) {
+        this.log('Authentik userinfo 获取失败，回落到 ID Token', { message: error.message });
+      }
+    }
+    if (claims && idClaims && claims.sub !== idClaims.sub) throw oidcError('Authentik userinfo 与 ID Token 的 sub 不匹配');
+    if (!claims) {
+      if (!idClaims) throw oidcError('Authentik 未返回可用的用户信息');
+      claims = idClaims;
+    }
+    const user = {
+      sub: String(claims.sub),
+      username: String(claims.preferred_username || claims.nickname || claims.email || claims.name || claims.sub),
+      name: String(claims.name || claims.preferred_username || claims.email || ''),
+      email: String(claims.email || '')
+    };
+    const credentialVersion = crypto.createHash('sha256').update(`${this.issuerUrl}:${this.clientId}`).digest('hex');
+    const sessionToken = createSessionToken({
+      mode: 'oidc',
+      user,
+      credentialVersion,
+      originHost: String(req?.headers?.host || '').toLowerCase(),
+      ttlSeconds: this.sessionTtlSeconds
+    });
+    this.log('Authentik 管理员已登录', { username: user.username, source: 'oidc' });
+    return {
+      returnTo: transaction.returnTo,
+      cookies: [
+        this.cookie(SESSION_COOKIE, sessionToken, this.sessionTtlSeconds),
+        this.clearCookie(TRANSACTION_COOKIE, '/auth/oidc/callback')
+      ]
+    };
+  }
+
+  // 用授权码换取令牌；PKCE 校验由 IdP 负责，这里只携带 code_verifier。
+  async exchangeCode(code, codeVerifier, discovery) {
     const form = new URLSearchParams({
       grant_type: 'authorization_code',
-      code: String(params.code),
+      code: String(code || ''),
       redirect_uri: this.redirectUri,
       client_id: this.clientId,
-      code_verifier: transaction.codeVerifier
+      code_verifier: codeVerifier
     });
     const headers = { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' };
     const supportedMethods = Array.isArray(discovery.token_endpoint_auth_methods_supported) ? discovery.token_endpoint_auth_methods_supported : [];
@@ -506,48 +567,29 @@ class AdminAuth {
       throw oidcError(`不支持的 Authentik Token 鉴权方式：${authMethod}`);
     }
     const tokens = await this.fetchJson(discovery.token_endpoint, { method: 'POST', headers, body: form.toString() });
-    const claims = await this.verifyIdToken(tokens.id_token, transaction.nonce, discovery);
-    const now = Date.now();
-    const expiresAt = Math.min(Number(claims.exp) * 1000, now + this.sessionTtlSeconds * 1000);
-    const sessionId = crypto.randomBytes(32).toString('base64url');
-    const user = {
-      sub: String(claims.sub),
-      username: String(claims.preferred_username || claims.nickname || claims.email || claims.name || claims.sub),
-      name: String(claims.name || claims.preferred_username || claims.email || ''),
-      email: String(claims.email || '')
-    };
-    this.sessions.set(sessionId, { user, claims, idToken: tokens.id_token, mode: 'oidc', expiresAt, createdAt: now });
-    this.log('Authentik 管理员已登录', { username: user.username, source: 'oidc' });
-    return {
-      returnTo: transaction.returnTo,
-      cookies: [
-        this.cookie(SESSION_COOKIE, sessionId, Math.max(1, Math.floor((expiresAt - now) / 1000))),
-        this.clearCookie(TRANSACTION_COOKIE, '/auth/oidc/callback')
-      ]
-    };
+    if (typeof tokens.access_token !== 'string' || !tokens.access_token) {
+      throw oidcError('Authentik 未返回有效的访问令牌');
+    }
+    return tokens;
   }
 
-  async logout(req) {
-    const session = this.sessionForRequest(req);
-    if (session) this.sessions.delete(session.id);
-    const sessionMode = session?.mode || (this.remoteMode() === 'password' ? 'password' : 'oidc');
-    let location = sessionMode === 'password' ? '/auth/login' : '/';
-    if (session && sessionMode === 'oidc' && this.isConfigured()) {
-      try {
-        const discovery = await this.discovery();
-        if (discovery.end_session_endpoint) {
-          const logoutUrl = new URL(discovery.end_session_endpoint);
-          logoutUrl.searchParams.set('id_token_hint', session.idToken);
-          const configuredPostLogout = String(process.env.AUTHENTIK_POST_LOGOUT_REDIRECT_URI || '').trim();
-          const fallbackPostLogout = new URL('/', this.redirectUri).toString();
-          logoutUrl.searchParams.set('post_logout_redirect_uri', configuredPostLogout || fallbackPostLogout);
-          location = logoutUrl.toString();
-        }
-      } catch (error) {
-        this.log('Authentik logout discovery failed', { message: error.message });
-      }
+  // 用访问令牌拉取用户信息；以 sub 为身份标识。
+  async fetchUserInfo(accessToken, discovery) {
+    const payload = await this.fetchJson(discovery.userinfo_endpoint, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+    });
+    if (!payload || typeof payload !== 'object' || typeof payload.sub !== 'string' || !payload.sub) {
+      throw oidcError('Authentik 返回的用户信息缺少 sub');
     }
-    return { location, cookie: this.clearCookie(SESSION_COOKIE) };
+    return payload;
+  }
+
+  logout(req) {
+    // 本地注销：撤销令牌指纹并清 cookie，退出后回到登录页。
+    // 签名令牌本身无状态，需把指纹记入撤销表，下次校验即拒绝。
+    const token = parseCookies(req.headers?.cookie)[SESSION_COOKIE];
+    if (token) revokeSessionToken(token);
+    return { location: '/auth/login', cookie: this.clearCookie(SESSION_COOKIE) };
   }
 }
 
@@ -558,6 +600,7 @@ function createAdminAuth(options) {
 module.exports = {
   AdminAuth,
   createAdminAuth,
+  SESSION_COOKIE,
   isLoopbackAddress,
   normalizeAddress,
   parseCookies,

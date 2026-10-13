@@ -63,7 +63,7 @@ function createOAuthHandler({ provider, adminAuth, getConfig, accountAccess, sub
     const secure = req.socket?.encrypted || (trusted && req.headers['x-forwarded-proto'] === 'https');
     let url;
     try { url = new URL(`${secure ? 'https' : 'http'}://${host}`); } catch { throw oauthError('invalid_request', '网关 Host 无效'); }
-    if (adminAuth.remoteMode() === 'oidc' && adminAuth.isConfigured()) {
+    if (adminAuth.isConfigured()) {
       const configured = new URL(adminAuth.redirectUri);
       if (url.origin !== configured.origin) throw oauthError('invalid_request', '请使用配置的 OIDC 网关地址和协议发起账号授权');
     }

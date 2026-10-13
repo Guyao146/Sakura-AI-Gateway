@@ -161,6 +161,17 @@ async function main() {
       assert.equal((await json(`/v1/${endpoint}`, payload('gpt-two'), bearer())).status, 403);
     }
     assert.deepEqual(observed, ['gpt-one', 'gpt-one', 'gpt-one']);
+    const anthropicHeaders = { 'x-api-key': tokens.access_token, 'anthropic-version': '2023-06-01' };
+    const anthropicInput = { model: 'gpt-one', max_tokens: 32, messages: [{ role: 'user', content: 'OAuth Messages' }] };
+    const anthropicMessage = ok(await json('/v1/messages', anthropicInput, anthropicHeaders));
+    assert.equal(anthropicMessage.type, 'message');
+    assert.equal(anthropicMessage.role, 'assistant');
+    assert.equal(anthropicMessage.model, 'gpt-one');
+    const deniedMessages = await json('/v1/messages', { ...anthropicInput, model: 'gpt-two' }, anthropicHeaders);
+    assert.equal(deniedMessages.status, 403);
+    assert.equal(deniedMessages.body.type, 'error');
+    assert.equal(deniedMessages.body.error.type, 'permission_error');
+    assert.equal(deniedMessages.body.error.code, 'model_not_allowed');
     // 首次连接的自动登记：接入方不预登记 Client，账号确认时选择来源 Key。
     const autoRedirect = 'http://localhost:34567/callback?source=auto';
     const autoParams = new URLSearchParams({ client_id: 'auto', name: 'Life Dashboard', redirect_uri: autoRedirect, response_type: 'code', state: 'auto-state',
@@ -243,6 +254,10 @@ async function main() {
     assert.equal((await json('/oauth/grants/revoke', { id: myGrants[0].id }, otherHeaders)).status, 404);
     const rotated = ok(await form('/oauth/token', { grant_type: 'refresh_token', client_id: client.id, refresh_token: tokens.refresh_token }));
     assert.equal((await request('/v1/models', { headers: bearer() })).status, 401);
+    const revokedMessages = await json('/v1/messages', anthropicInput, anthropicHeaders);
+    assert.equal(revokedMessages.status, 401);
+    assert.equal(revokedMessages.body.type, 'error');
+    assert.equal(revokedMessages.body.error.type, 'authentication_error');
     const replay = await form('/oauth/token', { grant_type: 'refresh_token', client_id: client.id, refresh_token: tokens.refresh_token });
     assert.equal(replay.body.error, 'invalid_grant');
     assert.equal((await request('/v1/models', { headers: bearer(rotated.access_token) })).status, 401, '刷新令牌重放应撤销该授权全部令牌');
@@ -265,6 +280,11 @@ async function main() {
     const noInvoke = await json('/v1/chat/completions', { model: 'gpt-one', messages: [] }, bearer(readOnly.access_token));
     assert.equal(noInvoke.status, 403);
     assert.equal(noInvoke.body.error.code, 'insufficient_scope');
+    const noMessages = await json('/v1/messages', anthropicInput, { 'x-api-key': readOnly.access_token });
+    assert.equal(noMessages.status, 403);
+    assert.equal(noMessages.body.type, 'error');
+    assert.equal(noMessages.body.error.type, 'permission_error');
+    assert.equal(noMessages.body.error.code, 'insufficient_scope');
     const invokeParams = new URLSearchParams(params);
     invokeParams.set('scope', 'models:invoke');
     const invokeOnly = await tokensFor(invokeParams);

@@ -46,6 +46,14 @@ function showPasswordLogin() {
   usernameInput.focus();
 }
 
+// 双通道登录页：OIDC 与本地账号同时可用，任一方式登录成功即可进入后台。
+function showDualLogin() {
+  passwordForm.classList.remove('hidden');
+  loginButton.classList.remove('hidden');
+  actionsElement.classList.remove('hidden');
+  setStatus('需要验证管理身份', '可使用外部 OIDC 提供商或本地账号登录', 'ready');
+}
+
 async function submitPassword(event) {
   event.preventDefault();
   const username = usernameInput.value.trim();
@@ -99,7 +107,12 @@ async function checkSession() {
       showError(status.error?.message || '请在网关所在本机完成管理员配置后再远程访问。');
       return;
     }
-    if (status.remoteMode === 'password' || status.mode === 'password') {
+    // 双通道：两种方式都可用时同页展示，任一缺失只展示可用项。
+    if (status.passwordConfigured && status.oidcConfigured) {
+      showDualLogin();
+      return;
+    }
+    if (status.passwordConfigured) {
       showPasswordLogin();
       return;
     }

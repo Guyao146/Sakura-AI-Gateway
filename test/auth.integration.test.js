@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 const projectRoot = path.join(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-auth-'));
@@ -50,7 +51,7 @@ function waitForOutput(child, marker) {
   });
 }
 
-function signIdToken(issuer, nonce) {
+function signIdToken(issuer, nonce, overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: publicJwk.kid })).toString('base64url');
   const payload = Buffer.from(JSON.stringify({
@@ -62,7 +63,8 @@ function signIdToken(issuer, nonce) {
     nonce,
     preferred_username: 'gateway-admin',
     name: 'Gateway Admin',
-    email: 'admin@example.test'
+    email: 'admin@example.test',
+    ...overrides
   })).toString('base64url');
   const data = `${header}.${payload}`;
   return `${data}.${crypto.sign('RSA-SHA256', Buffer.from(data), privateKey).toString('base64url')}`;
@@ -80,6 +82,12 @@ async function main() {
   let tokenRequests = 0;
   let discoveryRequests = 0;
   let discoveryAvailable = false;
+  let idOverrides = {};
+  let corruptSignature = false;
+  let includeIdToken = true;
+  let userinfoAvailable = true;
+  let userinfoSubject = 'authentik-user-1';
+  let jwksRequests = 0;
   const oidc = http.createServer(async (req, res) => {
     const issuer = `http://127.0.0.1:${oidc.address().port}/application/o/gateway`;
     const json = (status, body) => {
@@ -89,13 +97,15 @@ async function main() {
     if (req.url === '/application/o/gateway/.well-known/openid-configuration') {
       discoveryRequests += 1;
       if (!discoveryAvailable) {
-        json(503, { error: 'temporarily_unavailable' });
+        // issuer 不匹配时不能回落到约定端点，必须报错
+        json(200, { issuer: 'https://wrong.example/other-tenant', authorization_endpoint: 'https://wrong.example/authorize' });
         return;
       }
       json(200, {
         issuer,
         authorization_endpoint: `${issuer}/authorize`,
         token_endpoint: `${issuer}/token`,
+        userinfo_endpoint: `${issuer}/userinfo`,
         jwks_uri: `${issuer}/jwks`,
         end_session_endpoint: `${issuer}/end-session`,
         token_endpoint_auth_methods_supported: ['client_secret_basic'],
@@ -104,6 +114,7 @@ async function main() {
       return;
     }
     if (req.url === '/application/o/gateway/jwks') {
+      jwksRequests += 1;
       json(200, { keys: [publicJwk] });
       return;
     }
@@ -122,7 +133,25 @@ async function main() {
         expectedChallenge,
         'PKCE verifier 必须匹配登录请求的 challenge'
       );
-      json(200, { token_type: 'Bearer', access_token: 'test-access-token', id_token: signIdToken(issuer, expectedNonce), expires_in: 3600 });
+      let idToken = signIdToken(issuer, expectedNonce, idOverrides);
+      if (corruptSignature) {
+        const parts = idToken.split('.');
+        const signature = Buffer.from(parts[2], 'base64url');
+        signature[0] ^= 1;
+        idToken = `${parts[0]}.${parts[1]}.${signature.toString('base64url')}`;
+      }
+      json(200, { token_type: 'Bearer', access_token: 'test-access-token', ...(includeIdToken ? { id_token: idToken } : {}), expires_in: 3600 });
+      return;
+    }
+    if (req.url === '/application/o/gateway/userinfo' && req.method === 'GET') {
+      assert.equal(req.headers.authorization, 'Bearer test-access-token');
+      if (!userinfoAvailable) return json(503, { error: 'unavailable' });
+      json(200, {
+        sub: userinfoSubject,
+        preferred_username: 'gateway-admin',
+        name: 'Gateway Admin',
+        email: 'admin@example.test'
+      });
       return;
     }
     json(404, { error: 'not_found' });
@@ -143,6 +172,7 @@ async function main() {
       AUTHENTIK_CLIENT_SECRET: clientSecret,
       AUTHENTIK_REDIRECT_URI: redirectUri,
       AUTHENTIK_COOKIE_SECURE: 'false',
+      AUTHENTIK_SESSION_TTL_SECONDS: '600',
       TRUSTED_PROXY_ADDRESSES: '127.0.0.1,::1'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -151,7 +181,7 @@ async function main() {
   gateway.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   const baseUrl = `http://127.0.0.1:${gatewayPort}`;
   try {
-    await waitForOutput(gateway, '远程管理访问：Authentik OIDC 已启用');
+    await waitForOutput(gateway, '远程管理访问：外部 OIDC 已启用');
     const storedConfig = JSON.parse(fs.readFileSync(path.join(dataDirectory, 'config.json'), 'utf8'));
 
     const localStatus = await request(`${baseUrl}/auth/status`);
@@ -266,6 +296,9 @@ async function main() {
 
     const consentResult = await request(`${baseUrl}/oauth/consent?${appParams}`, { headers: { ...remoteHeaders, Cookie: sessionCookie } });
     assert.equal(consentResult.status, 200, consentResult.raw);
+    if (consentResult.json.user?.username !== 'gateway-admin') {
+      throw new Error(`consent user mismatch: ${JSON.stringify(consentResult.json.user)}`);
+    }
     assert.equal(consentResult.json.user.username, 'gateway-admin');
     const appConsent = consentResult.json;
     const approval = await request(`${baseUrl}/oauth/consent`, {
@@ -293,8 +326,15 @@ async function main() {
       headers: { ...remoteHeaders, Cookie: sessionCookie }
     });
     assert.equal(logout.status, 302);
-    assert.match(logout.headers.location, /\/end-session\?/);
-    assert.equal((await request(`${baseUrl}/api/admin/config`, { headers: { ...remoteHeaders, Cookie: sessionCookie } })).status, 401);
+    assert.equal(logout.headers.location, '/auth/login');
+    if (!logout.headers['set-cookie']?.some((c) => c.startsWith('sakura_ai_gateway_admin_session='))) {
+      throw new Error(`logout did not clear session cookie: ${JSON.stringify(logout.headers['set-cookie'])}`);
+    }
+    const afterLogout = await request(`${baseUrl}/api/admin/config`, { headers: { ...remoteHeaders, Cookie: sessionCookie } });
+    if (afterLogout.status !== 401) {
+      throw new Error(`session still valid after logout: ${afterLogout.raw}`);
+    }
+    assert.equal(afterLogout.status, 401);
     assert.equal((await request(`${baseUrl}/api/integration/config`, { headers: appHeaders })).status, 200, '退出浏览器会话不等同于撤销独立的持续连接授权');
     const appRevoke = await request(`${baseUrl}/oauth/revoke`, {
       method: 'POST', headers: { ...remoteHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -302,11 +342,56 @@ async function main() {
     });
     assert.equal(appRevoke.status, 200, appRevoke.raw);
     assert.equal((await request(`${baseUrl}/api/integration/config`, { headers: appHeaders })).status, 401);
+    assert.ok(jwksRequests > 0, 'userinfo 成功时仍必须验证 ID Token 签名');
+    const sessionPayload = JSON.parse(Buffer.from(sessionCookie.split('=')[1].split('.')[0], 'base64url').toString('utf8'));
+    assert.equal(sessionPayload.exp - sessionPayload.iat, 600, 'OIDC 签名会话也必须使用配置的 TTL');
+    const finishAnotherLogin = async () => {
+      const start = await request(`${baseUrl}/auth/oidc/login?account=1`, { headers: remoteHeaders });
+      assert.equal(start.status, 302);
+      const url = new URL(start.headers.location);
+      expectedNonce = url.searchParams.get('nonce');
+      expectedChallenge = url.searchParams.get('code_challenge');
+      const cookie = cookiePair(start.headers['set-cookie'], 'sakura_ai_gateway_oidc_state');
+      return request(`${baseUrl}/auth/oidc/callback?state=${encodeURIComponent(url.searchParams.get('state'))}&code=valid-code`, {
+        headers: { ...remoteHeaders, Cookie: cookie }
+      });
+    };
+    for (const [overrides, pattern] of [
+      [{ nonce: 'wrong-nonce' }, /nonce/], [{ aud: 'wrong-client' }, /audience/],
+      [{ iss: 'https://untrusted.example' }, /issuer/], [{ exp: Math.floor(Date.now() / 1000) - 300 }, /过期/]
+    ]) {
+      idOverrides = overrides;
+      const rejected = await finishAnotherLogin();
+      assert.equal(rejected.status, 502, rejected.raw);
+      assert.match(rejected.raw, pattern);
+      assert.equal(cookiePair(rejected.headers['set-cookie'], 'sakura_ai_gateway_admin_session'), '');
+    }
+    idOverrides = {};
+    corruptSignature = true;
+    const tampered = await finishAnotherLogin();
+    assert.equal(tampered.status, 502);
+    assert.match(tampered.raw, /签名校验失败/);
+    corruptSignature = false;
+    userinfoSubject = 'another-user';
+    const mismatch = await finishAnotherLogin();
+    assert.equal(mismatch.status, 502);
+    assert.match(mismatch.raw, /sub 不匹配/);
+    userinfoSubject = 'authentik-user-1';
+    userinfoAvailable = false;
+    assert.equal((await finishAnotherLogin()).status, 302, 'userinfo 不可用时允许已验证的 ID Token 回退');
+    userinfoAvailable = true;
+    includeIdToken = false;
+    assert.equal((await finishAnotherLogin()).status, 302, '保留只返回访问令牌的 userinfo 兼容流程');
     console.log('auth integration tests passed');
   } catch (error) {
-    throw new Error(`${error.message}\n${stderr}`);
+    throw new Error(`${error.message}\nstderr=${stderr}`);
   } finally {
-    gateway.kill();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    oidc.closeAllConnections();
     await new Promise((resolve) => oidc.close(resolve));
     fs.rmSync(dataDirectory, { recursive: true, force: true });
   }

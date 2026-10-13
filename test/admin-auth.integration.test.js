@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 const projectRoot = path.join(__dirname, '..');
 const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'sakura-ai-gateway-admin-auth-'));
@@ -76,18 +77,19 @@ async function main() {
   try {
     await waitForOutput(gateway, 'Sakura-AI-Gateway 已启动');
 
-    // 远程默认走 OIDC，此时未配置 → 503
+    // 远程未配置 OIDC 且无账号 → 503
     const initialStatus = await request(`${baseUrl}/auth/status`, { headers: remoteHeaders });
     assert.equal(initialStatus.status, 503, initialStatus.raw);
-    assert.equal(initialStatus.json.remoteMode, 'oidc');
+    assert.equal(initialStatus.json.oidcConfigured, false);
+    assert.equal(initialStatus.json.passwordConfigured, false);
 
-    // 密码登录端点在 oidc 模式下应拒绝
-    const wrongModeLogin = await request(`${baseUrl}/auth/password/login`, {
+    // 无可用账号时密码登录应 503
+    const noAccountLogin = await request(`${baseUrl}/auth/password/login`, {
       method: 'POST',
       headers: { ...remoteHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
-    assert.equal(wrongModeLogin.status, 409, wrongModeLogin.raw);
+    assert.equal(noAccountLogin.status, 503, noAccountLogin.raw);
 
     // 本机回环创建管理员账号
     const created = await request(`${baseUrl}/api/admin/admin-auth/users`, {
@@ -107,27 +109,10 @@ async function main() {
     });
     assert.equal(duplicate.status, 409, duplicate.raw);
 
-    // 切换到 password 模式
-    const switched = await request(`${baseUrl}/api/admin/admin-auth/remote-mode`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remoteMode: 'password' })
-    });
-    assert.equal(switched.status, 200, switched.raw);
-    assert.equal(switched.json.remoteMode, 'password');
-
-    // 切回 oidc 但未配置应拒绝
-    const switchBackEarly = await request(`${baseUrl}/api/admin/admin-auth/remote-mode`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remoteMode: 'oidc' })
-    });
-    assert.equal(switchBackEarly.status, 400, switchBackEarly.raw);
-
-    // /auth/status 现在应报告 password 模式且已配置
+    // 双通道：创建账号后无需切换模式，密码登录直接可用
     const readyStatus = await request(`${baseUrl}/auth/status`, { headers: remoteHeaders });
     assert.equal(readyStatus.status, 401, readyStatus.raw);
-    assert.equal(readyStatus.json.remoteMode, 'password');
+    assert.equal(readyStatus.json.passwordConfigured, true, '创建账号后密码通道应可用');
     assert.equal(readyStatus.json.configured, true);
 
     // 错误密码
@@ -208,6 +193,16 @@ async function main() {
       body: JSON.stringify({ username, password: 'rotated-secret-99' })
     });
     assert.equal(newLogin.status, 200, newLogin.raw);
+    const survivingCookie = cookiePair(newLogin.headers['set-cookie'], 'sakura_ai_gateway_admin_session');
+    const revokedLogin = await request(`${baseUrl}/auth/password/login`, {
+      method: 'POST', headers: { ...remoteHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password: 'rotated-secret-99' })
+    });
+    assert.equal(revokedLogin.status, 200, revokedLogin.raw);
+    const revokedCookie = cookiePair(revokedLogin.headers['set-cookie'], 'sakura_ai_gateway_admin_session');
+    const revoked = await request(`${baseUrl}/auth/logout`, { method: 'POST',
+      headers: { ...remoteHeaders, Cookie: revokedCookie, Origin: `http://${remoteHost}` } });
+    assert.equal(revoked.status, 302);
 
     // 同一来源连续失败 5 次后触发锁定（429）
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -227,26 +222,37 @@ async function main() {
     assert.equal(lockedLogin.status, 429, `第 6 次登录应被锁定：${lockedLogin.raw}`);
 
     // 重启后配置仍持久化
+    const exited = once(gateway, 'exit');
     gateway.kill();
-    await new Promise((resolve) => gateway.once('exit', resolve));
+    await exited;
     const restarted = spawnGateway();
     restarted.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
     try {
-      await waitForOutput(restarted, '本地账号认证已启用');
+      await waitForOutput(restarted, '本地账号登录可用');
       const persistedStatus = await request(`${baseUrl}/auth/status`, { headers: remoteHeaders });
-      assert.equal(persistedStatus.json.remoteMode, 'password', '重启后模式应持久化');
-      const restartLogin = await request(`${baseUrl}/auth/password/login`, {
-        method: 'POST',
-        headers: { ...remoteHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password: 'rotated-secret-99' })
+      assert.equal(persistedStatus.json.passwordConfigured, true, '重启后账号配置应持久化');
+      // 无状态签名令牌：重启前签发的会话 cookie 仍然有效
+      const persistedSession = await request(`${baseUrl}/api/admin/config`, {
+        headers: { ...remoteHeaders, Cookie: survivingCookie, Origin: `http://${remoteHost}` }
       });
-      assert.equal(restartLogin.status, 200, '重启后应能用新密码登录');
+      assert.equal(persistedSession.status, 200, '必须用重启前的 Cookie 验证会话持久化，不能重新登录');
+      const revokedSession = await request(`${baseUrl}/api/admin/config`, {
+        headers: { ...remoteHeaders, Cookie: revokedCookie, Origin: `http://${remoteHost}` }
+      });
+      assert.equal(revokedSession.status, 401, '注销的 Cookie 在重启后仍必须被拒绝');
       console.log('admin-auth 集成测试全部通过');
     } finally {
+      const exited = once(restarted, 'exit');
       restarted.kill();
+      await exited;
     }
   } finally {
-    gateway.kill();
+    if (gateway.exitCode === null && gateway.signalCode === null) {
+      const exited = once(gateway, 'exit');
+      gateway.kill();
+      await exited;
+    }
+    fs.rmSync(dataDirectory, { recursive: true, force: true });
     if (stderr) console.error(stderr);
   }
 }

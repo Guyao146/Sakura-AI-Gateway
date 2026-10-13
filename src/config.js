@@ -19,22 +19,16 @@ function makeSecret(prefix) {
   return `${prefix}_${crypto.randomBytes(24).toString('base64url')}`;
 }
 
-const ADMIN_REMOTE_MODES = ['oidc', 'password'];
-
 function normalizeAdminAuth(value = {}, env = process.env) {
-  const fromEnv = String(env.ADMIN_REMOTE_MODE || '').trim().toLowerCase();
-  const mode = ADMIN_REMOTE_MODES.includes(fromEnv)
-    ? fromEnv
-    : (ADMIN_REMOTE_MODES.includes(value?.remoteMode) ? value.remoteMode : 'oidc');
   const users = Array.isArray(value?.users) ? value.users.filter((item) => item && typeof item === 'object') : [];
   return {
-    remoteMode: mode,
     requireLocalLogin: value?.requireLocalLogin === true,
     users: users.map((item) => ({
       id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : makeId('admin'),
       username: String(item.username || '').trim(),
       passwordHash: typeof item.passwordHash === 'string' ? item.passwordHash : '',
       enabled: item.enabled !== false,
+      sessionEpoch: Number.isFinite(Number(item.sessionEpoch)) && Number(item.sessionEpoch) >= 0 ? Number(item.sessionEpoch) : 0,
       createdAt: item.createdAt || new Date().toISOString(),
       updatedAt: item.updatedAt || new Date().toISOString()
     })).filter((item) => item.username && item.passwordHash)
@@ -176,9 +170,7 @@ function publicConfig(config) {
 }
 
 function adminAuthSummary(value = {}) {
-  const mode = value?.remoteMode === 'password' ? 'password' : 'oidc';
   return {
-    remoteMode: mode,
     requireLocalLogin: value?.requireLocalLogin === true,
     users: Array.isArray(value?.users) ? value.users.map((item) => ({
       id: String(item.id || ''),
@@ -197,7 +189,6 @@ function maskPasswordHash(hash = '') {
 
 module.exports = {
   CONFIG_PATH,
-  ADMIN_REMOTE_MODES,
   loadConfig,
   saveConfig,
   publicConfig,

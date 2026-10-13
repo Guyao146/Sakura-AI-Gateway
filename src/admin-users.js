@@ -95,6 +95,7 @@ function userFromBody(body, existing = null) {
     username,
     passwordHash,
     enabled: body.enabled === undefined ? (existing?.enabled !== false) : body.enabled !== false,
+    sessionEpoch: Number.isFinite(Number(existing?.sessionEpoch)) && Number(existing.sessionEpoch) >= 0 ? Number(existing.sessionEpoch) : 0,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };

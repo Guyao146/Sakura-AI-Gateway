@@ -314,7 +314,8 @@ async function main() {
         assert.equal(failure.status, 400);
         assertJsonError(failure, requestId, 'quota_exceeded', '上游配额不足\n请稍后重试');
         assert.equal(failure.body.error.code, 'quota_exceeded');
-        assert.equal(failure.body.error.type, 'quota_error');
+        assert.equal(failure.body.error.type, protocol === 'anthropic' ? 'invalid_request_error' : 'quota_error');
+        if (protocol === 'anthropic') assert.equal(failure.body.error.upstream_type, 'quota_error');
         assert.equal(failure.body.error.param, 'model');
         assert.equal(failure.body.extra, 'preserved');
         assert.ok(observedRequestIds.some((entry) => entry.value === requestId), '请求 ID 应透传给上游');

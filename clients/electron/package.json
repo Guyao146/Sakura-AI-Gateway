@@ -1,6 +1,6 @@
 {
   "name": "sakura-ai-gateway-electron",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
   "description": "Electron desktop client for Sakura-AI-Gateway",
   "repository": { "type": "git", "url": "git+https://github.com/Guyao146/Sakura-AI-Gateway.git" },

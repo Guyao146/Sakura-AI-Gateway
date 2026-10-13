@@ -56,7 +56,7 @@ Sakura-AI-Gateway/
 - 来源识别与回环判定（`requestSource`、`isLoopbackAddress`）。
 - Authentik OIDC：discovery 缓存、Authorization Code + PKCE + state/nonce、JWKS 签名校验、HttpOnly 会话。
 - 本地账号密码：`loginWithPassword` 校验凭据后创建与 OIDC 相同的会话 Cookie；
-  `remoteMode()`/`remoteConfigured()` 决定远程访问的认证方式和错误提示。
+  `remoteConfigured()` 决定远程访问是否已有可用登录方式（OIDC 或本地账号）并给出错误提示。
 - 来源失败锁定：5 分钟内同一来源失败 5 次锁定 60 秒，返回 429。
 
 两种远程认证共用会话表与同源校验，详见 [认证与安全](security.md)。

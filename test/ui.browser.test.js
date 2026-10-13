@@ -261,7 +261,7 @@ async function main() {
     await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `
       const originalFetch = window.fetch;
       window.fetch = (input, options) => input === '/auth/status'
-        ? Promise.resolve(new Response(JSON.stringify({authenticated:false, configured:true, remoteMode:'password'}), {headers:{'Content-Type':'application/json'}}))
+        ? Promise.resolve(new Response(JSON.stringify({authenticated:false, configured:true, passwordConfigured:true, oidcConfigured:false}), {headers:{'Content-Type':'application/json'}}))
         : originalFetch(input, options);
     ` });
     await viewport(1440);

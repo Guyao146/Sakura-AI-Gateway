@@ -25,8 +25,9 @@ JSON 和 SSE 错误消息统一为：
 自定义前缀通过 `PUT /api/admin/settings` 的 `errorPrefix` 设置，留空只省略前缀。
 错误码优先取上游 `error.code`（Responses 流内错误也支持顶层 `code` 和
 `response.error.code`），缺失时取 HTTP 错误状态码；流内错误以 `502` 兜底，
-不以错误类别 `type` 或握手状态 `200` 代替。结构化 `code`、`type` 等字段及 HTTP
-状态保持不变；错误消息中的请求 ID 与 `x-request-id`、顶层 `request_id` 一致，
+不以错误类别 `type` 或握手状态 `200` 代替。结构化 `code`、`param` 及 HTTP
+状态保持不变；Anthropic 出口将非标准 `error.type` 映射为标准类型，并用 `error.upstream_type`
+保留原类型，OpenAI 出口不改写类型。错误消息中的请求 ID 与 `x-request-id`、顶层 `request_id` 一致，
 与 Responses 的 `response.id`、工具的 `call_id` 无关。正常响应和正常 SSE 帧不加这些信息。
 
 ---
@@ -43,6 +44,17 @@ JSON 和 SSE 错误消息统一为：
 ### `POST /v1/messages`（Anthropic Messages）
 
 转发到 Anthropic 上游 `/v1/messages`，或经转换转发到 OpenAI 兼容上游。
+
+- **SDK Base URL：** `http://127.0.0.1:8787`，不要加 `/v1`；官方 SDK 自行拼接 `/v1/messages`。
+- **鉴权：** `x-api-key: <本地 Key 或 OAuth access_token>`，亦接受 Bearer；OAuth 需要 `models:invoke`，沿用来源 Key 的模型权限。管理会话不能调用模型。
+- **请求：** `model` 使用本地模型名，`messages` 使用 `user` / `assistant` 和文本或内容块；`system` 位于顶层；客户端应提供 `max_tokens`。支持 `tools[].input_schema`、`tool_use`、`tool_result`、图片 URL/base64、`tool_choice` 和 `disable_parallel_tool_use`。
+- **协议头：** 仅向 Anthropic 目标端点转发 `anthropic-version`、`anthropic-beta`；版本缺省为 `2023-06-01`。接收端不会转发客户端的 API Key、Authorization 或 Cookie，上游使用独立配置的凭据。
+- **非流式：** 返回 `type: "message"`、`role: "assistant"`、本地 `model`、`content`、`stop_reason`、`stop_sequence` 和 `usage.input_tokens/output_tokens`。工具停止为 `tool_use`，长度截断为 `max_tokens`，OpenAI 内容过滤为 `refusal`。
+- **流式：** `stream: true` 返回 `text/event-stream`；事件为 `message_start` → 每个内容块的 `content_block_start` / `content_block_delta` / `content_block_stop` → `message_delta` → `message_stop`。文本用 `text_delta`，工具参数用 `input_json_delta`，不发送 OpenAI 的 `[DONE]`。OpenAI 并行工具帧会序列化成不交错的内容块，首个工具实时输出，后续块可能缓冲至流结束。末尾 usage-only 帧更新 `message_delta.usage`。
+- **错误：** JSON 和流内 `event: error` 使用 `{ "type": "error", "error": { "type": "...", "message": "..." }, "request_id": "..." }`。400/422 为 `invalid_request_error`，401 为 `authentication_error`，403 为 `permission_error`，404 为 `not_found_error`，413 为 `request_too_large`，429 为 `rate_limit_error`，一般 5xx 为 `api_error`（504 为 `timeout_error`，529 为 `overloaded_error`）。流中失败后不会再发 `message_stop` 伪装成功。
+- **追踪：** JSON/SSE 响应同时提供 `request-id` 和 `x-request-id`；错误体的 `request_id` 与两者一致。浏览器 CORS 放行常用 Anthropic / Stainless SDK 请求头并暴露追踪头，管理同源规则不变。
+
+跨协议仅转换可支持的能力：Anthropic 服务端工具不能降为普通 function；`cache_control` 在 OpenAI 转换时移除，不承诺等价缓存、签名 thinking 或 beta 行为。`/v1/messages/count_tokens`、批处理、Files API 未实现（返回 404），`GET /v1/models` 仍为 OpenAI 格式。不会把字符估算或一次付费生成伪装成精确 Token 计数。完整调用示例见 README「Anthropic SDK / Anthropic 兼容 APP」。
 
 ### `POST /v1/responses`（OpenAI Responses API）
 
@@ -143,13 +155,13 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/admin/admin-auth` | 当前远程认证方式与管理员账号列表（不含密码哈希） |
-| PUT | `/api/admin/admin-auth/remote-mode` | 切换远程认证方式，body 为 `{ remoteMode: "oidc" \| "password" }` |
+| GET | `/api/admin/admin-auth` | 管理员账号列表与「本机访问也要求登录」设置（不含密码哈希） |
+| PUT | `/api/admin/admin-auth/remote-mode` | 保存登录设置，body 为 `{ requireLocalLogin?: boolean }` |
 | POST | `/api/admin/admin-auth/users` | 新建管理员账号，body 为 `{ username, password }` |
 | PUT | `/api/admin/admin-auth/users/:id` | 编辑账号，body 为 `{ username?, password?, enabled? }`，密码留空不修改 |
-| DELETE | `/api/admin/admin-auth/users/:id` | 删除账号；本地账号模式至少保留一个启用账号 |
+| DELETE | `/api/admin/admin-auth/users/:id` | 删除账号；至少保留一个启用账号 |
 
-- 切换到 `password` 前必须存在启用账号；切换到 `oidc` 前必须完成 Authentik 环境变量配置
+- OIDC 与本地账号密码**并存**：登录页同页展示两种可用方式，任一登录成功即可进入后台；不存在互斥的远程认证方式开关
 - 用户名 3 到 32 个字符（`A-Za-z0-9._@+-`），密码至少 8 个字符且不含空白
 - 密码以 `scrypt$N$r$p$salt$hash` 格式哈希存储，接口永不返回哈希
 
@@ -305,8 +317,8 @@ OAuth 访问 `/api/integration/config` 复用原配置结构，额外包含 `aut
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 健康检查（公开）：`{status:'ok', service:'sakura-ai-gateway', version, time}`；外部项目可用它确认地址是否指向本网关 |
-| GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, remoteMode, oidcConfigured, passwordConfigured, user}` |
-| GET | `/auth/login` | 登录页；按 `remoteMode` 显示 Authentik 登录或账号密码表单 |
+| GET | `/auth/status` | 当前管理会话状态：`{authenticated, mode, configured, oidcConfigured, passwordConfigured, user}` |
+| GET | `/auth/login` | 登录页；按可用性同页展示外部 OIDC 登录按钮与账号密码表单 |
 | POST | `/auth/password/login` | 本地账号密码登录，body 为 `{ username, password }`；成功返回会话 Cookie |
 | GET | `/auth/login` | 网关本地登录页；不依赖 Authentik 在线，支持展示认证连接错误和重试 |
 | GET | `/auth/oidc/login` | 发起 OIDC 登录（重定向 Authentik） |

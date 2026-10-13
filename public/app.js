@@ -1624,38 +1624,27 @@ async function saveSettings() {
 function renderAdminAuth() {
   const data = state.adminAuth;
   if (!data) return;
-  const mode = data.remoteMode === 'password' ? 'password' : 'oidc';
-  const radio = document.querySelector(`input[name="adminAuthMode"][value="${mode}"]`);
-  if (radio) radio.checked = true;
   const requireCheckbox = $('#adminAuthRequireLocalLogin');
   requireCheckbox.checked = data.requireLocalLogin === true;
-  requireCheckbox.disabled = mode !== 'password';
-  $('#adminAuthOidcState').textContent = data.oidcConfigured ? '已配置' : '未配置 AUTHENTIK 环境变量';
-  $('#adminAuthPasswordState').textContent = (data.users || []).filter((item) => item.enabled).length > 0 ? `已配置 ${(data.users || []).filter((item) => item.enabled).length} 个启用账号` : '尚无启用账号';
   const users = data.users || [];
   $('#adminUserList').innerHTML = users.length ? users.map((item) => `<article class="item-card" data-card-id="${escapeHtml(item.id)}"><div><div class="item-title">${escapeHtml(item.username)}</div><div class="item-meta"><span class="tag ${item.enabled ? 'active' : 'off'}">${item.enabled ? '已启用' : '已停用'}</span>${item.createdAt ? `<span>创建于 ${escapeHtml(new Date(item.createdAt).toLocaleString())}</span>` : ''}${item.updatedAt ? `<span>更新于 ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</span>` : ''}</div></div><div class="item-actions"><button class="text-button" data-action="edit-admin-user" data-id="${escapeHtml(item.id)}">编辑</button><button class="text-button" data-action="toggle-admin-user" data-id="${escapeHtml(item.id)}">${item.enabled ? '停用' : '启用'}</button><button class="text-button delete" data-action="delete-admin-user" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('') : '<div class="empty">还没有管理员账号。远程访问会提示先在本机创建账号。</div>';
 }
 
 async function saveAdminAuthMode() {
-  const mode = document.querySelector('input[name="adminAuthMode"]:checked')?.value || 'oidc';
-  const requireLocalLogin = mode === 'password' && $('#adminAuthRequireLocalLogin').checked;
+  const requireLocalLogin = $('#adminAuthRequireLocalLogin').checked;
   const message = $('#adminAuthMessage');
   try {
     state.adminAuth = await api('/api/admin/admin-auth/remote-mode', {
       method: 'PUT',
-      body: JSON.stringify({ remoteMode: mode, requireLocalLogin })
+      body: JSON.stringify({ requireLocalLogin })
     });
     renderAdminAuth();
-    if (mode === 'password') {
-      message.textContent = requireLocalLogin
-        ? '已切换到本地账号认证，并开启本机登录：当前页面会立即失效，请用刚才配置的账号重新登录。'
-        : '已切换到本地账号认证：远程访问将使用账号密码登录。';
-    } else {
-      message.textContent = '已切换到外部 OIDC 提供商：远程访问将通过统一登录进入。';
-    }
+    message.textContent = requireLocalLogin
+      ? '已开启本机访问登录：当前页面会立即失效，请用管理员账号重新登录。'
+      : '已保存登录设置：远程访问可使用外部 OIDC 或本地账号登录。';
     message.className = 'form-message success';
-    toast('远程管理认证方式已保存');
-    if (mode === 'password' && requireLocalLogin) {
+    toast('登录设置已保存');
+    if (requireLocalLogin) {
       setTimeout(() => window.location.replace('/auth/login?returnTo=/'), 1600);
     }
   } catch (error) {
@@ -1856,13 +1845,6 @@ $('#modelCatalogList').addEventListener('input', (event) => {
 });
 $('#saveSettingsButton').addEventListener('click', saveSettings);
 $('#saveAdminAuthModeButton').addEventListener('click', saveAdminAuthMode);
-document.querySelectorAll('input[name="adminAuthMode"]').forEach((radio) => {
-  radio.addEventListener('change', () => {
-    const checkbox = $('#adminAuthRequireLocalLogin');
-    checkbox.disabled = radio.value !== 'password' && radio.checked;
-    if (checkbox.disabled) checkbox.checked = false;
-  });
-});
 $('#addAdminUserButton').addEventListener('click', () => fillAdminUserForm());
 $('#adminUserForm').addEventListener('submit', saveAdminUser);
 $('#adminUserList').addEventListener('click', handleAdminUserClick);

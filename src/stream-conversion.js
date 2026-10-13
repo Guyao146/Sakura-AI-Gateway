@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { responsesResponseSkeleton, responseId } = require('./protocol');
+const { responsesResponseSkeleton, responseId, anthropicStopReason } = require('./protocol');
 
 // 两个消费者共用 Chat 增量输入，避免 Messages/Responses 互转时再次丢失工具调用。
 function createResponsesStream(write, model) {
@@ -86,16 +86,32 @@ function createAnthropicStream(write, model) {
   const id = `msg_${crypto.randomBytes(8).toString('hex')}`;
   const blocks = [];
   const tools = new Map();
-  let textIndex;
+  let textBlock;
+  let activeBlock;
   let started = false;
   let finishReason = 'stop';
   let usage = {};
   const emit = (type, data = {}) => write({ type, ...data }, type);
+  const stopBlock = () => {
+    if (!activeBlock) return;
+    emit('content_block_stop', { index: activeBlock.index });
+    activeBlock.stopped = true;
+    activeBlock = undefined;
+  };
+  const startBlock = (item) => {
+    activeBlock = item;
+    emit('content_block_start', { index: item.index, content_block: item.content });
+  };
   const block = (content_block) => {
-    const index = blocks.length;
-    blocks.push(index);
-    emit('content_block_start', { index, content_block });
-    return index;
+    const item = { index: blocks.length, content: content_block, pending: [], stopped: false };
+    blocks.push(item);
+    if (activeBlock?.content.type === 'text') stopBlock();
+    if (!activeBlock) startBlock(item);
+    return item;
+  };
+  const delta = (item, value) => {
+    if (item === activeBlock) emit('content_block_delta', { index: item.index, delta: value });
+    else item.pending.push(value);
   };
   return {
     chunk(parsed) {
@@ -107,26 +123,36 @@ function createAnthropicStream(write, model) {
       }
       const choice = parsed.choices?.[0] || {};
       if (choice.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice.delta || {};
-      if (delta.content) {
-        if (textIndex === undefined) textIndex = block({ type: 'text', text: '' });
-        emit('content_block_delta', { index: textIndex, delta: { type: 'text_delta', text: delta.content } });
+      const change = choice.delta || {};
+      if (change.content) {
+        if (!textBlock) textBlock = block({ type: 'text', text: '' });
+        delta(textBlock, { type: 'text_delta', text: change.content });
       }
-      for (const call of delta.tool_calls || []) {
+      for (const call of change.tool_calls || []) {
+        textBlock = undefined;
         const key = call.index ?? 0;
         if (!tools.has(key)) {
           if (!call.function?.name) throw new Error('工具调用首帧缺少名称');
           tools.set(key, block({ type: 'tool_use', id: responseId(call.id, `call_${crypto.randomBytes(8).toString('hex')}`), name: call.function.name, input: {} }));
         }
-        if (call.function?.arguments) emit('content_block_delta', { index: tools.get(key), delta: { type: 'input_json_delta', partial_json: call.function.arguments } });
+        if (call.function?.arguments) delta(tools.get(key), { type: 'input_json_delta', partial_json: call.function.arguments });
       }
     },
     finish() {
       if (!started) this.chunk({});
-      for (const index of blocks) emit('content_block_stop', { index });
+      stopBlock();
+      // OpenAI 的并行工具增量可以交错；Messages 的块必须顺序结束。
+      // 首个工具实时输出，其余工具/后续文本只缓存到上游正常结束，不重开已结束的块。
+      for (const item of blocks) {
+        if (item.stopped) continue;
+        startBlock(item);
+        for (const value of item.pending) delta(item, value);
+        item.pending.length = 0;
+        stopBlock();
+      }
       // Chat/Responses 常到末帧才给输入用量；message_delta 允许补充累计 input_tokens，
       // 不需要为了等待用量而延迟 message_start 或缓存整段输出。
-      emit('message_delta', { delta: { stop_reason: finishReason === 'length' ? 'max_tokens' : finishReason === 'tool_calls' ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } });
+      emit('message_delta', { delta: { stop_reason: anthropicStopReason(finishReason), stop_sequence: null }, usage: { input_tokens: usage.prompt_tokens || 0, output_tokens: usage.completion_tokens || 0 } });
       emit('message_stop');
       return usage;
     }

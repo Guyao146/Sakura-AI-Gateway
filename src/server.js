@@ -119,22 +119,28 @@ const handleOAuth = createOAuthHandler({
   serveStatic
 });
 
+function passwordCredentialVersion(sub) {
+  const user = adminAuth.enabledLocalUsers().find((item) => `local:${item.id}` === sub);
+  return user ? crypto.createHash('sha256').update(user.passwordHash).digest('hex') : '';
+}
+
 function oauthSubjectForAccess(access) {
   return {
     id: access.user?.sub || '', mode: access.mode, username: access.user?.username || '',
     issuer: access.mode === 'oidc' ? adminAuth.issuerUrl : '',
-    credentialVersion: access.mode === 'password' ? access.session?.credentialVersion || '' : hashToken(adminAuth.clientId)
+    credentialVersion: access.mode === 'password'
+      ? passwordCredentialVersion(access.user?.sub)
+      : hashToken(`${adminAuth.issuerUrl}:${adminAuth.clientId}`)
   };
 }
 
 function oauthSubjectIsActive(subject) {
-  if (!subject || subject.mode !== adminAuth.remoteMode()) return false;
+  if (!subject || !['oidc', 'password'].includes(subject.mode)) return false;
   if (subject.mode === 'password') {
-    const user = adminAuth.enabledLocalUsers().find((item) => `local:${item.id}` === subject.id);
-    return Boolean(user && subject.credentialVersion === hashToken(user.passwordHash));
+    return Boolean(subject.id) && subject.credentialVersion === passwordCredentialVersion(subject.id);
   }
   return subject.mode === 'oidc' && adminAuth.isConfigured() && subject.issuer === adminAuth.issuerUrl
-    && subject.credentialVersion === hashToken(adminAuth.clientId) && Boolean(subject.id);
+    && subject.credentialVersion === hashToken(`${adminAuth.issuerUrl}:${adminAuth.clientId}`) && Boolean(subject.id);
 }
 
 function requireAccountAccess(req) {
@@ -260,7 +266,8 @@ function adminRequestIsSameOrigin(req, access) {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key, Accept, Cache-Control',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key, Accept, Cache-Control, X-Request-ID, Anthropic-Version, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access, X-Stainless-Lang, X-Stainless-Package-Version, X-Stainless-OS, X-Stainless-Arch, X-Stainless-Runtime, X-Stainless-Runtime-Version, X-Stainless-Retry-Count, X-Stainless-Timeout, X-Stainless-Helper-Method',
+    'Access-Control-Expose-Headers': 'X-Request-ID, Request-ID, Retry-After',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS'
   };
 }
@@ -469,11 +476,9 @@ function requireAdmin(req, res) {
     return true;
   }
   const message = access.configured
-    ? (access.mode === 'password' ? '远程管理访问需要使用本地账号登录' : '远程管理访问需要通过 Authentik 登录')
+    ? '远程管理访问需要登录：可使用外部 OIDC 提供商或本地账号'
     : adminAuth.remoteConfigurationError();
-  const loginUrl = access.configured
-    ? (access.mode === 'password' ? '/auth/login?returnTo=/' : '/auth/oidc/login?returnTo=/')
-    : null;
+  const loginUrl = access.configured ? '/auth/login?returnTo=/' : null;
   sendJson(res, access.configured ? 401 : 503, {
     error: {
       message,
@@ -1144,7 +1149,7 @@ function chooseRoute(model) {
   return { route: null, upstreams: [], strategy: 'failover' };
 }
 
-function upstreamHeaders(upstream, requestId, incomingHeaders = {}) {
+function upstreamHeaders(upstream, requestId, incomingHeaders = {}, targetProtocol = upstream.protocol) {
   const headers = {
     Accept: 'application/json, text/event-stream',
     'Content-Type': 'application/json',
@@ -1158,14 +1163,15 @@ function upstreamHeaders(upstream, requestId, incomingHeaders = {}) {
       || normalized === 'session_id'
       || normalized === 'originator'
       || normalized.startsWith('x-openai-')
-      || normalized.startsWith('x-codex-');
+      || normalized.startsWith('x-codex-')
+      || (targetProtocol === 'anthropic' && ['anthropic-version', 'anthropic-beta'].includes(normalized));
     if (!allowed || headers[name] !== undefined || Array.isArray(value)) continue;
     const text = String(value);
     if (text && text.length <= 4096) headers[name] = text;
   }
   if (upstream.authType === 'x-api-key') headers['x-api-key'] = upstream.apiKey;
   if (upstream.authType === 'bearer') headers.Authorization = `Bearer ${upstream.apiKey}`;
-  if (upstream.protocol === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+  if (targetProtocol === 'anthropic' && !headers['anthropic-version']) headers['anthropic-version'] = '2023-06-01';
   if (requestId) headers['x-request-id'] = requestId;
   return headers;
 }
@@ -1313,8 +1319,7 @@ function makeUpstreamRequest(localInput, localProtocol, upstream, upstreamModel,
   body = normalizeReasoningForEndpoint(body, nativeResponses, targetProtocol,
     localProtocol === 'responses' || modelEntry?.thinkingLevels?.includes('none') === true);
   assertMediaPreserved(localInput, localProtocol, body, targetProtocol);
-  const headers = upstreamHeaders(upstream, requestId, options.requestHeaders);
-  if (targetProtocol === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+  const headers = upstreamHeaders(upstream, requestId, options.requestHeaders, targetProtocol);
   return {
     endpoint: resolveEndpoint(upstream.baseUrl, nativeResponses ? '/v1/responses' : targetProtocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions'),
     body,
@@ -1555,6 +1560,7 @@ async function pipeRawStream(response, res, options = {}) {
     const failed = isErrorPayload(parsed, eventName);
     let output = options.normalizeResponses ? normalizeResponsesEvent(parsed, options.state) : parsed;
     if (failed) {
+      if (res.gatewayProtocol === 'anthropic') output = errorForProtocol('anthropic', output, 502);
       output = formatErrorPayload(output, { prefix: errorPrefix(), requestId: res.gatewayRequestId, status: 502, eventName });
     }
     if (output !== parsed) {
@@ -2883,11 +2889,9 @@ function importConfig(rawConfig, preserveCredentials = true) {
     ? config.integrations
     : (Array.isArray(source.integrations) ? source.integrations : []).map(normalizeIntegration);
   Object.assign(config, importedOAuth);
+  // 导入凭据后旧登录会话全部失效：无状态令牌绑定会话纪元，这里整体递增。
+  if (!preserveCredentials) importedAdminAuth.users.forEach((item) => { item.sessionEpoch = (Number(item.sessionEpoch) || 0) + 1; });
   oauthProvider.clearPending();
-  if (!preserveCredentials) {
-    adminAuth.sessions.clear();
-    adminAuth.transactions.clear();
-  }
   upstreamBalances.clear();
   saveConfig(config);
   return publicConfig(config);
@@ -3285,32 +3289,8 @@ async function handleAdmin(req, res, pathname) {
   }
   if (req.method === 'PUT' && pathname === '/api/admin/admin-auth/remote-mode') {
     const body = await readBody(req);
-    const mode = String(body?.remoteMode || '').trim().toLowerCase();
-    if (!['oidc', 'password'].includes(mode)) {
-      sendJson(res, 400, { error: { message: '远程管理认证方式只能是 oidc 或 password' } });
-      return;
-    }
-    if (mode === 'password' && !adminAuth.isPasswordConfigured()) {
-      sendJson(res, 400, { error: { message: '切换到本地账号认证前，请先创建至少一个启用的管理员账号' } });
-      return;
-    }
-    if (mode === 'oidc' && !adminAuth.isConfigured()) {
-      sendJson(res, 400, { error: { message: adminAuth.configurationError() || 'Authentik OIDC 尚未配置完成' } });
-      return;
-    }
     const merged = normalizeAdminAuth(config.adminAuth);
-    merged.remoteMode = mode;
     if (typeof body?.requireLocalLogin === 'boolean') merged.requireLocalLogin = body.requireLocalLogin;
-    if (merged.requireLocalLogin && merged.remoteMode !== 'password') {
-      sendJson(res, 400, { error: { message: '只有本地账号认证方式下才能开启「本机访问也要求登录」' } });
-      return;
-    }
-    if (config.adminAuth.remoteMode !== mode) {
-      oauthProvider.cancelWhere(() => true, '网关登录方式已切换，请重新授权');
-      oauthProvider.clearPending();
-      adminAuth.sessions.clear();
-      adminAuth.transactions.clear();
-    }
     config.adminAuth = merged;
     saveConfig(config);
     sendJson(res, 200, adminAuth.localUsersSummary());
@@ -3345,16 +3325,13 @@ async function handleAdmin(req, res, pathname) {
     }
     if (req.method === 'DELETE') {
       const enabledUsers = config.adminAuth.users.filter((item) => item.id !== id && item.enabled !== false);
-      if (config.adminAuth.remoteMode === 'password' && enabledUsers.length === 0) {
-        sendJson(res, 400, { error: { message: '本地账号认证下至少保留一个启用的管理员账号' } });
+      if (enabledUsers.length === 0) {
+        sendJson(res, 400, { error: { message: '至少保留一个启用的管理员账号' } });
         return;
       }
       config.adminAuth = { ...normalizeAdminAuth(config.adminAuth), users: config.adminAuth.users.filter((item) => item.id !== id) };
       oauthProvider.cancelWhere((grant) => grant.subject.mode === 'password' && grant.subject.id === `local:${id}`, '授权账号已删除');
       oauthProvider.clearPending();
-      for (const [sessionId, session] of adminAuth.sessions) {
-        if (session.mode === 'password' && session.user.sub === `local:${id}`) adminAuth.sessions.delete(sessionId);
-      }
       saveConfig(config);
       sendJson(res, 200, adminAuth.localUsersSummary());
       return;
@@ -3373,16 +3350,14 @@ async function handleAdmin(req, res, pathname) {
       return;
     }
     const enabledUsers = config.adminAuth.users.filter((item) => item.id !== id && item.enabled !== false);
-    if (config.adminAuth.remoteMode === 'password' && user.enabled === false && enabledUsers.length === 0) {
-      sendJson(res, 400, { error: { message: '本地账号认证下至少保留一个启用的管理员账号' } });
+    if (user.enabled === false && enabledUsers.length === 0) {
+      sendJson(res, 400, { error: { message: '至少保留一个启用的管理员账号' } });
       return;
     }
     if (user.enabled === false || user.passwordHash !== config.adminAuth.users[index].passwordHash) {
+      user.sessionEpoch = (Number(config.adminAuth.users[index].sessionEpoch) || 0) + 1;
       oauthProvider.cancelWhere((grant) => grant.subject.mode === 'password' && grant.subject.id === `local:${id}`, '授权账号已停用或密码已修改');
       oauthProvider.clearPending();
-      for (const [sessionId, session] of adminAuth.sessions) {
-        if (session.mode === 'password' && session.user.sub === `local:${id}`) adminAuth.sessions.delete(sessionId);
-      }
     }
     config.adminAuth = {
       ...normalizeAdminAuth(config.adminAuth),
@@ -3463,6 +3438,11 @@ async function requestHandler(req, res) {
   }
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname;
+  const isAnthropicRequest = pathname === '/v1/messages' || pathname.startsWith('/v1/messages/');
+  if (isAnthropicRequest) {
+    res.gatewayProtocol = 'anthropic';
+    res.setHeader('request-id', res.gatewayRequestId);
+  }
   if (await handleOAuth(req, res, requestUrl)) return;
   if (pathname === '/health') {
     sendJson(res, 200, { status: 'ok', service: 'sakura-ai-gateway', version: APP_VERSION, time: nowIso() });
@@ -3470,16 +3450,15 @@ async function requestHandler(req, res) {
   }
   if (pathname === '/auth/status' && req.method === 'GET') {
     const access = loginNeedsAccount(requestUrl) ? requireAccountAccess(req) : adminAuth.authenticate(req);
-    const mode = access.ok ? access.mode : adminAuth.remoteMode();
+    const mode = access.ok ? access.mode : (adminAuth.isConfigured() ? 'oidc' : 'password');
     const configured = access.ok ? true : adminAuth.remoteConfigured();
     const error = access.ok ? null : (configured
-      ? (mode === 'password' ? '需要使用本地账号登录' : '需要通过 Authentik 登录')
+      ? '请通过外部 OIDC 提供商或本地账号登录'
       : adminAuth.remoteConfigurationError());
     sendJson(res, access.ok ? 200 : (configured ? 401 : 503), {
       authenticated: access.ok,
       mode,
       configured,
-      remoteMode: adminAuth.remoteMode(),
       oidcConfigured: adminAuth.isConfigured(),
       passwordConfigured: adminAuth.isPasswordConfigured(),
       user: access.user || null,
@@ -3495,12 +3474,8 @@ async function requestHandler(req, res) {
       sendJson(res, error.statusCode || 400, { error: { message: error.message } });
       return;
     }
-    if (adminAuth.remoteMode() !== 'password') {
-      sendJson(res, 409, { error: { message: '当前远程管理认证方式为 Authentik，不能使用账号密码登录' } });
-      return;
-    }
     if (!adminAuth.isPasswordConfigured()) {
-      sendJson(res, 503, { error: { message: adminAuth.remoteConfigurationError() } });
+      sendJson(res, 503, { error: { message: adminAuth.remoteConfigurationError() || '还没有可用的本地管理员账号' } });
       return;
     }
     try {
@@ -3619,7 +3594,7 @@ async function requestHandler(req, res) {
     return;
   }
   if (pathname.startsWith('/v1/')) {
-    sendJson(res, 404, { error: { message: '接口不存在' } });
+    sendJson(res, 404, errorForProtocol(isAnthropicRequest ? 'anthropic' : 'openai', { error: { message: '接口不存在' } }, 404));
     return;
   }
   if (req.method === 'GET') {
@@ -3648,7 +3623,11 @@ const server = http.createServer((req, res) => {
   res.gatewayRequestId = requestIdFromRequest(req);
   requestHandler(req, res).catch((error) => {
     log('request error', { message: error.message, stack: error.stack });
-    if (!res.headersSent) sendJson(res, error.statusCode || 500, { error: { message: error.message || '服务器内部错误' } });
+    if (!res.headersSent) {
+      const status = error.statusCode || 500;
+      const body = { error: { message: error.message || '服务器内部错误' } };
+      sendJson(res, status, res.gatewayProtocol === 'anthropic' ? errorForProtocol('anthropic', body, status) : body);
+    }
     else res.end();
   });
 });
@@ -3656,14 +3635,13 @@ const server = http.createServer((req, res) => {
 server.listen(config.settings.port, config.settings.host, () => {
   log(`Sakura-AI-Gateway 已启动：http://${config.settings.host}:${config.settings.port}`);
   log('本地管理访问：无需认证');
-  if (adminAuth.remoteMode() === 'password') {
-    log(adminAuth.isPasswordConfigured()
-      ? `远程管理访问：本地账号认证已启用（${adminAuth.enabledLocalUsers().length} 个账号）`
-      : adminAuth.remoteConfigurationError());
-    if (adminAuth.requireLocalLogin()) log('本机回环访问管理后台也要求登录');
-  } else {
-    log(adminAuth.isConfigured() ? '远程管理访问：Authentik OIDC 已启用' : adminAuth.configurationError());
-  }
+  log(adminAuth.isConfigured()
+    ? '远程管理访问：外部 OIDC 已启用'
+    : '远程管理访问：外部 OIDC 未配置（AUTHENTIK_ISSUER_URL 等环境变量）');
+  log(adminAuth.isPasswordConfigured()
+    ? `远程管理访问：本地账号登录可用（${adminAuth.enabledLocalUsers().length} 个账号）`
+    : '远程管理访问：还没有本地管理员账号');
+  if (adminAuth.requireLocalLogin()) log('本机回环访问管理后台也要求登录');
   for (const item of config.localApiKeys) log(`本地 API Key（${item.name}）：${item.key}`);
   if (config.upstreams.length === 0) log('当前还没有配置上游，请打开首页配置。');
 });

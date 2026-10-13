@@ -116,7 +116,7 @@ npm.cmd start
 
 ## 本地账号密码认证（可与外部 OIDC 提供商切换）
 
-如果不想部署独立的 OIDC 提供商，也可以让网关自己验证管理账号密码。两种远程认证方式可以随时切换：
+如果不想部署独立的 OIDC 提供商，也可以让网关自己验证管理账号密码。两种登录方式并存，登录页同时展示可用的方式，任一成功即可进入后台：
 
 - 本机回环访问默认免认证；只有远程访问管理后台时才需要登录（也可以在后台开启「本机访问也要求登录」，见下文）
 - 密码使用 scrypt（含随机盐）哈希后保存在 `data/config.json`，明文不会回传前端，也不会写入请求日志
@@ -127,27 +127,27 @@ npm.cmd start
 
 1. 在网关所在本机打开 <http://127.0.0.1:8787/>（回环访问免认证）
 2. 进入「访问控制 → 管理认证」，点击「＋ 新建账号」创建第一个管理员账号
-3. 选择「本地账号密码」并点击「保存认证方式」
+3. 账号创建后即生效，无需切换认证方式
 
-之后远程访问网关首页会进入登录页，输入账号密码即可进入后台。需要换回统一登录时，在同一面板选择「外部 OIDC 提供商」保存即可（前提是已配置下面的环境变量）。
+之后远程访问网关首页会进入登录页，输入账号密码即可进入后台。配置了下方的环境变量后，登录页会同时显示外部 OIDC 登录按钮，两种方式都能进入后台。
 
 ### 2. 让本机访问也要求登录
 
 桌面客户端和本机浏览器都走回环地址，默认免认证。如果希望本机打开后台也要登录，在「管理认证」面板勾选「本机访问也要求登录」再保存即可：
 
-- 仅在「本地账号密码」模式下、且至少存在一个启用账号时生效；
+- 仅在至少存在一种可用登录方式（本地账号或外部 OIDC）时生效；
 - 还没有任何账号时不会生效，保留创建第一个账号的入口；
 - 保存后当前页面会立即失效，跳转到登录页，用刚配置的账号登录即可；
-- OIDC 模式下不生效（避免外部 OIDC 提供商不可用时把管理员锁死在本机）。
+- 还没有任何可用登录方式时不生效，避免把管理员锁死在本机。
 
-也可以在启动时用环境变量直接指定初始认证方式：
+登录方式不再互斥，无需指定初始认证方式：创建本地账号后账号密码登录立即可用，配置 OIDC 环境变量后统一登录入口同时出现。
 
 ```powershell
-$env:ADMIN_REMOTE_MODE = "password"   # 或 oidc（默认）
+$env:AUTHENTIK_ISSUER_URL = "https://auth.example.com/application/o/gateway"
+$env:AUTHENTIK_CLIENT_ID = "..."
+$env:AUTHENTIK_CLIENT_SECRET = "..."
+$env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
 ```
-
-> 注意：`ADMIN_REMOTE_MODE` 只决定启动时使用的模式；在后台切换后会以配置文件为准。
-
 ### 2. 管理员账号约定
 
 - 用户名 3 到 32 个字符，可用字母、数字以及 `. _ @ + -`
@@ -191,7 +191,7 @@ $env:AUTHENTIK_REDIRECT_URI = "https://gateway.example.com/auth/oidc/callback"
 node src/server.js
 ```
 
-远程用户访问 `https://gateway.example.com/` 时会先进入网关自身的登录页，再由用户选择跳转外部 OIDC 提供商。登录页和会话状态检查不依赖提供商响应，因此认证服务临时不可用时仍能显示明确错误并重新尝试，不会只留下超时或空白页面。认证成功后，网关验证 discovery、issuer、audience、过期时间、state、nonce、PKCE 和 ID Token 签名，并创建仅服务端保存的 `HttpOnly` 会话。服务重启后远程会话失效，需要重新登录。
+远程用户访问网关首页时会先进入网关自身的登录页，再由用户选择跳转外部 OIDC 提供商。登录页和会话状态检查不依赖提供商响应，因此认证服务临时不可用时仍能显示明确错误并重新尝试，不会只留下超时或空白页面。认证成功后，网关用授权码换令牌并调用 userinfo 获取用户信息；若返回 ID Token，必须验证签名、issuer、audience、有效期和 nonce，并核对 userinfo 的主体一致。随后签发 HMAC 签名的 HttpOnly 会话令牌，令牌和 Cookie 使用同一配置有效期；端点来自 discovery 文档，未提供发现文档时回落到约定路径。服务重启后远程会话仍然有效，注销时撤销令牌指纹。
 
 ### 3. 反向代理与来源判断
 
@@ -308,15 +308,57 @@ curl http://127.0.0.1:8787/v1/chat/completions ^
   -d "{\"model\":\"claude-3-5-sonnet\",\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}"
 ```
 
-### Anthropic 兼容 APP
+### Anthropic SDK / Anthropic 兼容 APP
 
-Base URL 同样填：
+接口为 `POST /v1/messages`，支持 JSON 和 `stream: true` 的 SSE 响应。
+**官方 Anthropic SDK 的 Base URL 填网关根地址，不加 `/v1`**（SDK 会自动拼接 `/v1/messages`）：
 
 ```text
-http://127.0.0.1:8787/v1
+http://127.0.0.1:8787
 ```
 
-请求 `POST /v1/messages`，使用本地 API Key 作为 `x-api-key` 或 Bearer Token。网关会根据模型路由选择上游。
+若第三方 APP 只自动拼接 `/messages`，则填 `http://127.0.0.1:8787/v1`；最终请求路径应为 `/v1/messages`，不能出现 `/v1/v1/messages`。
+使用后台创建的本地 API Key 或网关 OAuth 访问令牌（需要 `models:invoke` 权限），通过 `x-api-key` 或 `Authorization: Bearer` 发送。管理登录 Cookie 不能代替模型凭据。
+
+PowerShell 调用示例（`model` 填后台配置的本地模型名）：
+
+```powershell
+$headers = @{ 'x-api-key' = 'sk-local_xxx'; 'anthropic-version' = '2023-06-01' }
+$body = @{
+  model = 'my-model'
+  max_tokens = 256
+  system = 'You are a helpful assistant.'
+  messages = @(@{ role = 'user'; content = 'Hello' })
+} | ConvertTo-Json -Depth 10
+Invoke-RestMethod -Uri 'http://127.0.0.1:8787/v1/messages' -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+```
+
+已安装官方 `@anthropic-ai/sdk` 的 Node.js 客户端可直接调用（网关本身不依赖该 SDK）：
+
+```javascript
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  baseURL: 'http://127.0.0.1:8787',
+  apiKey: process.env.SAKURA_GATEWAY_API_KEY,
+});
+const input = {
+  model: 'my-model',
+  max_tokens: 256,
+  messages: [{ role: 'user', content: 'Hello' }],
+};
+console.log(await client.messages.create(input));
+
+const stream = client.messages.stream(input);
+stream.on('text', (text) => process.stdout.write(text));
+console.log(await stream.finalMessage());
+```
+
+- 上游可以是 OpenAI Chat、OpenAI Responses 或 Anthropic，不要求模型本身为 Claude。网关转换 system、文本、图片、自定义工具及工具结果，并返回 Anthropic `message` / SSE 事件。
+- 原生 Anthropic 请求保留请求体和 `anthropic-version` / `anthropic-beta`；未提供版本时默认 `2023-06-01`。这两个头不会发往 OpenAI 端点，上游认证始终使用后台保存的凭据。
+- 跨协议时，`disable_parallel_tool_use` 转换为 `parallel_tool_calls`；OpenAI 流式请求启用 `stream_options.include_usage`。输入用量可能在末尾 `message_delta` 才补齐；上游未报告用量时不会伪造精确计数。并行工具增量会整理为顺序内容块，首个工具实时输出，其余工具可能等待上游结束。
+- 返回 `request-id`（供 Anthropic SDK 使用）及既有的 `x-request-id`。已支持浏览器 SDK 常用头的 CORS 预检，但不要在公共前端暴露长期有效 Key；管理接口仍受独立认证和同源检查保护。
+- 这不是完整的 Anthropic 平台代理：`/v1/messages/count_tokens`、批处理、Files API 及 Anthropic 格式的 Models API 尚未实现。跨到 OpenAI 时不提供 Anthropic prompt cache 语义，会移除 `cache_control`；原生服务端工具（如 web search）不能伪装成普通 function，无法转换时返回明确错误。跨协议 thinking 仅映射已有的强度参数，不保证签名思考块、引用和所有 beta 能力等价。
 
 ### OpenAI Responses API
 
@@ -426,7 +468,7 @@ Responses 流式请求会返回 `response.created`、`response.output_text.delta
 - `HOST`：监听地址，默认 `127.0.0.1`
 - `PORT`：监听端口，默认 `8787`
 - `SAKURA_AI_GATEWAY_DATA_DIR`：可选，指定配置数据目录；默认是项目下的 `data`
-- `ADMIN_REMOTE_MODE`：可选，远程管理认证方式，`oidc`（默认）或 `password`；在后台切换后以配置文件为准
+- ADMIN_REMOTE_MODE：已废弃。远程登录方式不再互斥：配置了 OIDC 环境变量即显示统一登录入口，创建本地账号后即可使用账号密码登录
 - `AUTHENTIK_ISSUER_URL`：外部 OIDC 提供商 Application 的 OIDC issuer URL
 - `AUTHENTIK_CLIENT_ID`：外部 OIDC 提供商 OAuth2/OpenID Provider 的 Client ID
 - `AUTHENTIK_CLIENT_SECRET`：Confidential Provider 的 Client Secret

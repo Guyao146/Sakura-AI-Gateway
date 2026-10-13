@@ -102,6 +102,17 @@ function appendRetrySummary(body, summary) {
   return { ...body, message };
 }
 
+const ANTHROPIC_ERROR_TYPES = new Set([
+  'invalid_request_error', 'authentication_error', 'billing_error', 'permission_error', 'not_found_error',
+  'conflict_error', 'request_too_large', 'rate_limit_error', 'api_error', 'timeout_error', 'overloaded_error'
+]);
+
+function anthropicErrorType(status) {
+  const types = { 401: 'authentication_error', 402: 'billing_error', 403: 'permission_error', 404: 'not_found_error',
+    409: 'conflict_error', 413: 'request_too_large', 429: 'rate_limit_error', 504: 'timeout_error', 529: 'overloaded_error' };
+  return types[status] || (Number(status) >= 400 && Number(status) < 500 ? 'invalid_request_error' : 'api_error');
+}
+
 function errorForProtocol(localProtocol, body, status) {
   const source = isObject(body) ? body : {};
   const details = isObject(source.error) ? source.error
@@ -113,7 +124,9 @@ function errorForProtocol(localProtocol, body, status) {
         };
   const error = { ...details, message: errorMessage(body, `上游返回 HTTP ${status}`) };
   if (localProtocol === 'anthropic') {
-    return { ...(source.error ? source : {}), type: 'error', error: { type: 'api_error', ...error } };
+    const type = ANTHROPIC_ERROR_TYPES.has(error.type) ? error.type : anthropicErrorType(status);
+    return { ...(source.error ? source : {}), type: 'error', error: { ...error,
+      ...(error.type && error.type !== type ? { upstream_type: error.type } : {}), type } };
   }
   return source.error ? { ...source, error } : { error: { type: 'upstream_error', ...error } };
 }

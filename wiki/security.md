@@ -22,37 +22,44 @@
   （逗号分隔的精确 IP 列表），此时网关才会解析转发头，且会从右向左找到第一个非可信 IP
   作为真实来源。
 
-## Authentik OIDC 流程
+## 外部 OIDC 登录流程
 
-1. 未认证的远程访问先进入网关本地登录页（`/auth/login`）；用户点击登录后才访问 Authentik（`/auth/oidc/login`）。登录页本身不依赖认证服务器在线。
-2. 使用 **Authorization Code + PKCE**，并携带 `state` 与 `nonce`（交易 Cookie
+网关是 OIDC 客户端，使用 **Authorization Code + PKCE（S256）**，兼容 Authentik 与任意标准 OIDC 提供商（如 Sakura-Auth-Server）。
+
+1. 未认证的远程访问先进入网关本地登录页（`/auth/login`）；登录页同时展示「外部 OIDC 登录」按钮与本地账号密码表单（仅在对应方式可用时显示）。
+   点击 OIDC 按钮后才访问提供商（`/auth/oidc/login`）。登录页本身不依赖认证服务器在线。
+2. 授权请求携带 `state`、`nonce`、`code_challenge`（交易 Cookie
    `sakura_ai_gateway_oidc_state`，10 分钟有效）。
-3. 回调 `/auth/oidc/callback` 校验：discovery、issuer、audience、过期时间（含 60s 时钟容差）、
-   `state`/`nonce`/PKCE，以及通过 **JWKS 对 ID Token 做非对称签名校验**。
-4. 校验通过后创建随机 32 字节的会话 ID，写入 **HttpOnly** Cookie
-   （`sakura_ai_gateway_admin_session`），有效期 = `min(claims.exp, now + SESSION_TTL)`。
-5. 会话只存在服务端内存（`Map`），**服务重启后远程会话全部失效**，需重新登录。
+3. 端点解析：优先读取 `/.well-known/openid-configuration`；提供商不暴露发现文档时自动回落到
+   约定路径 `{issuer}/authorize`、`/token`、`/userinfo`（发现结果缓存 10 分钟）。
+4. 回调 `/auth/oidc/callback` 用授权码换令牌（Token 端点鉴权按 discovery 自动选择
+   `client_secret_basic` / `client_secret_post`），再用访问令牌调用 **userinfo** 获取
+   `sub` / `preferred_username` / `name` / `email`。返回 ID Token 时必须校验其签名、issuer、audience、有效期和 nonce，
+   并要求 userinfo 的 `sub` 与其一致；userinfo 不可用时回落到已验证的 ID Token Claims。
+   仅返回访问令牌的提供商仍可通过受信任的 userinfo 端点建立身份，但不属于完整 OIDC ID Token 流程。
+5. 校验通过后签发 **HMAC 签名的无状态会话令牌**，写入 **HttpOnly** Cookie
+   （`sakura_ai_gateway_admin_session`），有效期 `AUTHENTIK_SESSION_TTL_SECONDS`（默认 8 小时）。
+   令牌内嵌登录主体与凭据版本，进程重启后会话仍然有效。
 
 安全细节：
 
 - Client Secret 只从环境变量读取，**不写入 `data/config.json` 或 Git**。
-- Token 端点鉴权默认按 discovery 自动选择 `client_secret_basic` / `client_secret_post`。
-- 签名校验要求非对称签名 JWT；**不支持加密的 JWE ID Token**（Authentik 不要配 Encryption Key）。
-- `TRANSACTION_TTL_MS = 10min`、`DISCOVERY_TTL_MS = 1h`（discovery 有缓存）。
-- 登出：清会话并调用 Authentik `end_session_endpoint`（带 `id_token_hint`）。
+- 会话签名密钥持久化在数据目录 `.admin_session_secret`（0600），可用
+  `SAKURA_AI_GATEWAY_ADMIN_SESSION_SECRET` 覆盖。
+- 登出：撤销令牌指纹（`.admin_session_revoked`）并清除 Cookie，回到登录页；不做 RP-initiated logout。
 
 ## 本地账号密码认证
 
-当 `adminAuth.remoteMode` 为 `password` 时，远程管理访问改用网关自己验证的账号密码，可与 Authentik 相互切换。
+远程管理访问也可以使用网关自己验证的账号密码，与外部 OIDC **并存**：登录页同页展示两种方式，任一登录成功即可进入后台。
 账号与哈希保存在 `data/config.json` 的 `adminAuth.users`，密码使用 **scrypt（N=16384, r=8, p=1，32 字节输出，16 字节随机盐）**，
 格式 `scrypt$N$r$p$saltHex$hashHex`；管理接口永不返回哈希，配置导出包含哈希但从不包含明文。
-1. 未认证的远程访问先进入登录页 `/auth/login`；`remoteMode` 为 `password` 时显示账号密码表单，否则显示 Authentik 登录按钮。
+1. 未认证的远程访问进入登录页 `/auth/login`；有启用账号时显示账号密码表单。
 2. `POST /auth/password/login` 携带 `{username, password}`；用户名用 `timingSafeEqual` 常量时间比较，密码用 scrypt 重新派生后常量时间比对。
-3. 验证通过后创建与 OIDC 相同的随机 32 字节会话 ID，写入 **HttpOnly** Cookie（`sakura_ai_gateway_admin_session`），
-   有效期 `AUTHENTIK_SESSION_TTL_SECONDS`（本地账号同样使用该项配置，默认 28800 秒）。
+3. 验证通过后签发与 OIDC 相同的 **HMAC 签名会话令牌**，写入 **HttpOnly** Cookie（`sakura_ai_gateway_admin_session`），
+   有效期 `AUTHENTIK_SESSION_TTL_SECONDS`（默认 28800 秒）。
 4. 会话记录登录时的 `Host`（`originHost`）；后续管理请求必须来自同一 Host，且 `Origin`/`Sec-Fetch-Site` 通过同源检查。
-5. 会话只存在服务端内存，**服务重启后失效**。本地账号登出只清除本机会话，不跳转 Authentik。
-6. 会话绑定账号密码版本，修改密码或停用／删除账号会使旧会话与该账号的 OAuth 授权失效；重新启用账号不会恢复已撤销的授权。
+5. 会话为无状态签名令牌，**服务重启后仍然有效**；注销时把令牌指纹记入撤销表，下次校验即拒绝。
+6. 会话绑定凭据版本与会话纪元：修改密码、停用／删除账号、导入备份配置都会让旧会话与该账号的 OAuth 授权失效；重新启用账号不会恢复已撤销的会话与授权。
 
 ## 第三方账号授权（OAuth 2.0）
 
@@ -66,7 +73,7 @@
 - 刷新同时轮换访问与刷新令牌，旧访问令牌失效。重用已消费的刷新令牌会撤销整条授权，客户端必须串行刷新；scope 只能缩小，不能扩大。
 - 模型权限为「确认时权限快照 ∩ 来源 Key 当前权限」，沿用模型分组、别名、大小写、转译及配额规则。「全部模型」明确包含新增模型，自定义范围不自动扩大。
 - 访问令牌只用于模型调用与获准配置读取。`/api/admin/*` 明确拒绝 OAuth 令牌，即使来自回环或伴随管理 Cookie；刷新令牌仅用于刷新／撤销。
-- 应用修改／停用／删除、来源 Key 停用／删除、本地账号密码修改／停用／删除及登录方式切换会撤销相应授权；退出浏览器会话本身不撤销独立持续连接。
+- 应用修改／停用／删除、来源 Key 停用／删除、本地账号密码修改／停用／删除及导入备份配置会撤销相应授权；退出浏览器会话本身不撤销独立持续连接。
 - 授权响应禁止缓存，同意页使用严格 CSP、`frame-ancestors 'none'` 和 `X-Frame-Options: DENY` 防点击劫持，`Referrer-Policy: no-referrer` 防授权参数通过 Referer 泄露。前后端共用安全回跳函数，拒绝反斜杠、控制字符、协议相对 URL 及路径归一化后的外跳。
 - OAuth 请求体最大 16 KiB，拒绝重复表单／查询参数；每来源每分钟最多 120 次。尚未确认与尚未兑换的交易分别最多 1000 条。
 
@@ -83,9 +90,9 @@
 
 `adminAuth.requireLocalLogin`（管理后台「管理认证」页的「本机访问也要求登录」复选框）开启后：
 
-- 仅当 **远程认证方式为本地账号密码** 且 **存在至少一个启用账号** 时才生效；
+- 仅当 **至少存在一种可用登录方式**（本地账号或外部 OIDC 任一可用）时才生效；
 - 生效时回环访问与管理面接口同样要求登录，未登录会跳转到 `/auth/login`；
-- **OIDC 模式或还没有任何账号时保持免认证**，避免把管理员锁死在本机、连创建第一个账号的机会都没有；
+- **还没有任何账号且未配置 OIDC 时保持免认证**，避免把管理员锁死在本机、连创建第一个账号的机会都没有；
 - 开启动作会使当前免认证的页面立即失效，前端会提示并跳转到登录页，用刚配置的账号登录即可。
 
 桌面客户端捆绑的网关会随构建同步更新；开启本机登录前请确认客户端已更新到包含登录页的版本。
@@ -118,12 +125,20 @@
 | `data/config.json` | 含上游/本地 Key、账号哈希、OAuth 令牌哈希与权限记录 | 0600 权限、原子写（`.tmp` + rename）、已 `.gitignore` |
 | `data/metrics.json` | 脱敏元数据 | 0600、已 `.gitignore` |
 | `data/metrics-log.jsonl` | 脱敏元数据 | 0600、追加写入、已 `.gitignore` |
+| `data/.admin_session_secret` | 管理会话 HMAC 签名密钥 | 0600、已 `.gitignore`，不可公开或跨不可信实例共享 |
+| `data/.admin_session_revoked` | 已注销会话的 SHA-256 指纹 | 0600、已 `.gitignore`，持久化防止重启恢复已注销会话 |
 | Authentik Client Secret | 高 | 仅环境变量，永不落盘 |
 
 > ℹ️ `.gitignore` 覆盖 `data/config.json`、`data/metrics.json`、`data/metrics-log.jsonl`、
 > `data/*.tmp` 与 `*.log`，运行时数据不会被误提交。
 
-配置导出包含 OAuth 授权的哈希与撤销状态，属于敏感备份。默认保留凭据导入沿用本机授权；完整恢复会采用备份记录，**可能恢复备份时尚未撤销的授权**，恢复后应审查。旧备份没有 OAuth 字段时按空列表处理。网关重启会清除待确认请求、授权码和登录会话，但不清除仍有效的已签发令牌记录；当前只适用于单进程部署。
+配置导出包含 OAuth 授权的哈希与撤销状态，属于敏感备份。默认保留凭据导入沿用本机授权；完整恢复会采用备份记录，**可能恢复备份时尚未撤销的授权**，恢复后应审查。旧备份没有 OAuth 字段时按空列表处理。网关重启会清除待确认请求、授权码和未完成的 OIDC 登录交易，但保留已签发且未过期/撤销的管理会话和模型访问令牌；当前只适用于单进程部署。
+
+### 可选真实认证服务器回归
+
+在安装 Node.js 22.5+ 并准备好 Sakura-Auth-Server 源码后，将 `SAKURA_AUTH_SERVER_SOURCE` 设置为该源码目录的绝对路径，再运行 `npm run test:auth-server`。该测试不属于默认 `npm test`，不要求安装额外依赖。
+
+测试在系统临时目录创建独立的 Auth-Server SQLite 数据库和网关数据，随机分配两个回环端口，完成真实密码登录、同意授权、PKCE 换码、ID Token/JWKS 校验及 userinfo 获取；同时验证网关本地密码通道、重启前 Cookie 的持久性，以及注销撤销在重启后仍然有效。结束后停止临时服务并清理数据，不修改 Auth-Server 源码或现有部署。
 
 ## 反向代理与 HTTPS
 

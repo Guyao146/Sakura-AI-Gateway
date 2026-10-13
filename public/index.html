@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v3.0.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v3.2.0</strong></div>
       </aside>
 
       <div class="content">
@@ -124,17 +124,15 @@
           <div><h2>管理认证</h2></div>
           <button id="saveAdminAuthModeButton" class="button primary">保存认证方式</button>
         </div>
-        <p class="help">远程访问管理后台与第三方账号授权使用下面选择的登录方式。本地 API Key 调用不受切换影响；账号授权只在对应认证方式下有效。</p>
+        <p class="help">远程访问管理后台与第三方账号授权时，可使用外部 OIDC 提供商登录，也可以使用本地管理员账号密码登录；登录页会同时展示两种可用方式。本地 API Key 调用不受影响。</p>
         <fieldset class="key-access-fieldset">
-          <legend>远程管理认证方式</legend>
-          <label class="check-label"><input type="radio" name="adminAuthMode" value="oidc" checked> 外部 OIDC 提供商（<span id="adminAuthOidcState">检查中</span>）</label>
-          <label class="check-label"><input type="radio" name="adminAuthMode" value="password"> 本地账号密码（<span id="adminAuthPasswordState">检查中</span>）</label>
-          <label class="check-label"><input type="checkbox" id="adminAuthRequireLocalLogin"> 本机访问也要求登录（仅本地账号模式生效；开启后本机打开后台也要输入账号密码）</label>
+          <legend>登录方式</legend>
+          <label class="check-label"><input type="checkbox" id="adminAuthRequireLocalLogin"> 本机访问也要求登录（开启后本机打开后台也要输入账号密码）</label>
         </fieldset>
         <div id="adminAuthMessage" class="form-message"></div>
 
         <div class="subheading-row"><h3>管理员账号</h3><button id="addAdminUserButton" class="button secondary">＋ 新建账号</button></div>
-        <p class="help">密码使用 scrypt 哈希后保存在本地配置中，明文不会回传到前端，也不会写入请求日志。账号在 password 模式下至少保留一个启用状态。</p>
+        <p class="help">密码使用 scrypt 哈希后保存在本地配置中，明文不会回传到前端，也不会写入请求日志。至少保留一个启用状态的账号。</p>
         <div id="adminUserList" class="key-list"></div>
       </section>
 

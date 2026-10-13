@@ -359,6 +359,8 @@ dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
 .login-status.error .login-status-icon::after { background: var(--danger); }
 .login-actions { display: grid; gap: 10px; margin-top: 16px; }
 .login-form { display: grid; gap: 14px; margin-top: 22px; }
+/* 双通道登录页：OIDC 按钮与账号密码表单同页时的分隔与标题。 */
+.login-form::before { content: '或使用本地账号'; display: block; color: var(--muted); font-size: 12px; letter-spacing: .08em; text-align: center; }
 .login-field { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
 .login-field input { width: 100%; margin-top: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px; background: #111617; color: var(--text); font-size: 14px; transition: border-color .18s ease, box-shadow .18s ease; }
 .login-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(141, 224, 176, .12); }

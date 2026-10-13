@@ -37,7 +37,7 @@ assert.equal(isUpgradeArchive({ name: `${brand}-v2.5.2.tar.gz`, digest }, '2.6.0
 
 // Only explicit migration paths may mention the old identity. Scan sources, not build artifacts/data.
 const migrationFiles = new Set([
-  'src/config.js', 'src/metrics.js', 'public/app.js', 'clients/electron/data-directory.js',
+  'src/config.js', 'src/metrics.js', 'src/admin-session.js', 'public/app.js', 'clients/electron/data-directory.js',
   'clients/shared/DesktopData.cs', 'test/brand-migration.test.js', 'test/branding.test.js',
   'test/ui.browser.test.js', 'test/integration-auth.test.js', 'wiki/migration.md'
 ]);

@@ -110,6 +110,23 @@ assert.equal(streamErrorForProtocol('responses', { error: { message: 'connection
 assert.equal(streamErrorForProtocol('anthropic', source).error.type, 'rate_limit_error');
 assert.equal(streamErrorForProtocol('openai', source).error.code, 'quota_exceeded');
 
+for (const [status, type] of [
+  [400, 'invalid_request_error'], [401, 'authentication_error'], [402, 'billing_error'],
+  [403, 'permission_error'], [404, 'not_found_error'], [409, 'conflict_error'],
+  [413, 'request_too_large'], [422, 'invalid_request_error'], [429, 'rate_limit_error'],
+  [500, 'api_error'], [502, 'api_error'], [503, 'api_error'], [504, 'timeout_error'], [529, 'overloaded_error']
+]) {
+  assert.equal(errorForProtocol('anthropic', { message: 'failed' }, status).error.type, type);
+  const original = { error: { type: 'vendor_error', code: 'vendor_code', param: 'model', message: 'failed' } };
+  const normalized = errorForProtocol('anthropic', original, status);
+  assert.equal(normalized.type, 'error');
+  assert.deepEqual(normalized.error, { ...original.error, type, upstream_type: 'vendor_error' });
+  assert.equal(original.error.type, 'vendor_error', '不能修改用于日志记录的原始错误');
+  assert.deepEqual(errorForProtocol('openai', original, status), original, 'OpenAI 出口仍保留供应商错误类型');
+}
+assert.equal(streamErrorForProtocol('anthropic', { error: { type: 'server_error', message: 'failed' } }).error.type, 'api_error');
+assert.equal(streamErrorForProtocol('anthropic', { error: { type: 'overloaded_error', message: 'busy' } }).error.type, 'overloaded_error');
+
 assert.equal(appendRetrySummary(source, ''), source, '没有重试摘要时原样返回');
 const summary = '已依次尝试：primary×2、fallback×1';
 const nested = appendRetrySummary(source, summary);

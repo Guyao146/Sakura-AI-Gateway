@@ -61,12 +61,12 @@ async function main() {
   assert.equal(verifyPassword('newsecret456', rotated.passwordHash), true);
   assert.equal(verifyPassword('secret123', rotated.passwordHash), false);
 
-  // requireLocalLogin 归一化与保留
+  // requireLocalLogin 归一化与保留；旧配置中的 remoteMode 字段被忽略
   const { normalizeAdminAuth } = require('../src/config');
-  assert.equal(normalizeAdminAuth({ remoteMode: 'password', requireLocalLogin: true }).requireLocalLogin, true);
-  assert.equal(normalizeAdminAuth({ remoteMode: 'password' }).requireLocalLogin, false, '缺省为 false');
+  assert.equal(normalizeAdminAuth({ requireLocalLogin: true }).requireLocalLogin, true);
+  assert.equal(normalizeAdminAuth({}).requireLocalLogin, false, '缺省为 false');
   assert.equal(normalizeAdminAuth({ requireLocalLogin: 'yes' }).requireLocalLogin, false, '非布尔值不生效');
-  assert.equal(normalizeAdminAuth({ remoteMode: 'oidc', requireLocalLogin: true }).remoteMode, 'oidc');
+  assert.equal(normalizeAdminAuth({ remoteMode: 'password', requireLocalLogin: true }).remoteMode, undefined, '旧 remoteMode 字段已移除');
 
   console.log('admin-users 单元测试全部通过');
 }

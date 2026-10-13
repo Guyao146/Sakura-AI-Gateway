@@ -161,6 +161,9 @@ function openAIToAnthropic(input, model) {
       result.tool_choice = { type: 'tool', name: input.tool_choice.function.name };
     }
   }
+  if (typeof input.parallel_tool_calls === 'boolean' && tools?.length && result.tool_choice?.type !== 'none') {
+    result.tool_choice = { ...(result.tool_choice || { type: 'auto' }), disable_parallel_tool_use: !input.parallel_tool_calls };
+  }
   return result;
 }
 
@@ -171,6 +174,7 @@ function anthropicToOpenAI(input, model) {
     max_tokens: input.max_tokens ?? input.max_completion_tokens ?? 4096,
     stream: Boolean(input.stream)
   };
+  if (result.stream) result.stream_options = { include_usage: true };
   if (input.system) {
     result.messages.push({ role: 'system', content: textFromContent(input.system) });
   }
@@ -181,7 +185,7 @@ function anthropicToOpenAI(input, model) {
         result.messages.push({
           role: 'tool',
           tool_call_id: block.tool_use_id,
-          content: anthropicInputContentToOpenAI(block.content)
+          content: anthropicInputContentToOpenAI(block.content ?? '')
         });
       }
       const normalBlocks = message.content.filter((block) => block.type !== 'tool_result');
@@ -207,7 +211,8 @@ function anthropicToOpenAI(input, model) {
     result.reasoning_effort = budget >= 8192 ? 'high' : budget >= 4096 ? 'medium' : 'low';
   }
   if (Array.isArray(input.tools)) {
-    result.tools = input.tools.map((tool) => ({
+    // 保留原生工具标记，由转发层拒绝有损跨协议转换；同协议仍原样转发。
+    result.tools = input.tools.map((tool) => tool.type && tool.type !== 'custom' ? { ...tool } : ({
       type: 'function',
       function: {
         name: tool.name,
@@ -226,6 +231,9 @@ function anthropicToOpenAI(input, model) {
     } else if (input.tool_choice?.type === 'none') {
       result.tool_choice = 'none';
     }
+    if (typeof input.tool_choice.disable_parallel_tool_use === 'boolean') {
+      result.parallel_tool_calls = !input.tool_choice.disable_parallel_tool_use;
+    }
   }
   return result;
 }
@@ -240,8 +248,15 @@ function anthropicInputContentToOpenAI(content) {
       return { type: 'image_url', image_url: { url: block.source.url } };
     }
     // 未支持的非文本内容不能以错误的 Anthropic 形态直接传给 Chat；转发层会检测丢失并报错。
-    return block.type === 'text' ? block : null;
+    return block.type === 'text' ? { type: 'text', text: block.text || '' } : null;
   }).filter(Boolean);
+}
+
+function anthropicStopReason(finishReason) {
+  if (finishReason === 'tool_calls') return 'tool_use';
+  if (finishReason === 'length') return 'max_tokens';
+  if (finishReason === 'content_filter') return 'refusal';
+  return 'end_turn';
 }
 
 function openAIResponseToAnthropic(input, model) {
@@ -258,19 +273,19 @@ function openAIResponseToAnthropic(input, model) {
     }
     content.push({
       type: 'tool_use',
-      id: call.id,
+      id: responseId(call.id, `toolu_${crypto.randomBytes(8).toString('hex')}`),
       name: call.function?.name,
       input: parsedInput
     });
   }
   const finishReason = choice.finish_reason;
   return {
-    id: input.id || `msg_${crypto.randomBytes(8).toString('hex')}`,
+    id: responseId(input.id, `msg_${crypto.randomBytes(8).toString('hex')}`),
     type: 'message',
     role: 'assistant',
     model,
     content,
-    stop_reason: finishReason === 'tool_calls' ? 'tool_use' : (finishReason === 'length' ? 'max_tokens' : 'end_turn'),
+    stop_reason: anthropicStopReason(finishReason),
     stop_sequence: null,
     usage: {
       input_tokens: input.usage?.prompt_tokens || 0,
@@ -751,6 +766,7 @@ module.exports = {
   resolveEndpoint,
   openAIToAnthropic,
   anthropicToOpenAI,
+  anthropicStopReason,
   openAIContentToAnthropic,
   openAIResponseToAnthropic,
   anthropicResponseToOpenAI,
