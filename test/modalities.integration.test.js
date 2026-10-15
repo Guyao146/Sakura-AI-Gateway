@@ -272,6 +272,13 @@ async function main() {
     assert.deepEqual(catalog.upstreams[0].models.find(({ id }) => id === 'reasoning-extra').thinkingLevels, extra.thinkingLevels);
     const logs = fs.readFileSync(path.join(dataDirectory, 'metrics-log.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert(logs.some((entry) => entry.model === 'captioner' && entry.success), '额外转译调用应计入统计');
+    const translations = logs.filter((entry) => entry.id.includes('-translation-'));
+    assert(translations.some((entry) => entry.success) && translations.some((entry) => !entry.success));
+    assert(translations.every((entry) => entry.keyId === saved.localApiKeys[0].id && entry.keyName), '成功和失败的转译子请求都应记录来源 Key');
+    const metrics = checked(await request('/api/admin/metrics'));
+    const keyLogs = logs.filter((entry) => entry.keyId === saved.localApiKeys[0].id);
+    assert.equal(metrics.byKey[saved.localApiKeys[0].id].requests, keyLogs.length);
+    assert.equal(metrics.byKey[saved.localApiKeys[0].id].totalTokens, keyLogs.reduce((sum, entry) => sum + entry.usage.totalTokens, 0));
     if (process.env.GATEWAY_BROWSER_TEST === '1') await require('./modalities.browser')(base, upstreamId);
     console.log('modality integration tests passed');
   } finally {

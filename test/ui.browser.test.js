@@ -177,6 +177,153 @@ async function main() {
     await waitFor(settled);
     await evaluate('refreshMetrics()');
     assert.equal(await evaluate('document.querySelector("#statsGrid").getAnimations({subtree:true}).length'), 0, '自动刷新不能重播卡片动画');
+    assert.equal(await evaluate('document.querySelectorAll("#keyStatsBody tr").length'), 1, '未使用的默认 Key 应补零展示');
+    const keyStatsCells = (keyId) => evaluate(`(() => {
+      const row = [...document.querySelectorAll('#keyStatsBody tr')].find(item => item.dataset.keyId === ${keyId});
+      return row ? [...row.cells].map(cell => cell.textContent) : null;
+    })()`);
+    assert.deepEqual((await keyStatsCells('state.config.localApiKeys[0].id')).slice(1), ['0', '0', '0', '-', '0', '0', '0', '0', '-']);
+    // 通过真实管理接口导入隔离数据，验证表格、范围筛选、日志分页与刷新竞态。
+    await evaluate(`(async () => {
+      clearInterval(state.metricsRefreshTimer);
+      window.keyMetricsTest = { primary: { ...state.config.localApiKeys[0] }, goneId: 'key-gone"><img src=x onerror=alert(1)>' };
+      keyMetricsTest.disabled = (await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: '停用 <img src=x onerror=alert(1)>', enabled: false }) })).item;
+      keyMetricsTest.unused = (await api('/api/admin/local-keys', { method: 'POST', body: JSON.stringify({ name: '未使用 Key' }) })).item;
+      await api('/api/admin/local-keys/' + keyMetricsTest.primary.id, { method: 'PUT', body: JSON.stringify({ name: '改名的默认 Key' }) });
+      const record = (id, keyId, day, extra = {}) => ({ id, keyId, keyName: '历史名称', success: true, status: 200, finishedAt: new Date(2026, 9, day, 12).toISOString(), usage: { promptTokens: 1, completionTokens: 1 }, ...extra });
+      await api('/api/admin/metrics/import', { method: 'POST', body: JSON.stringify({ records: [
+        record('ui-key-first', keyMetricsTest.primary.id, 1, { usage: { promptTokens: 10, completionTokens: 4 }, upstream: 'backup', attempts: [{ upstream: 'primary', status: 503 }, { upstream: 'backup', status: 200 }] }),
+        record('ui-key-failure', keyMetricsTest.primary.id, 2, { success: false, status: 503, usage: { promptTokens: 3, completionTokens: 2 } }),
+        record('ui-key-disabled', keyMetricsTest.disabled.id, 2, { usage: { promptTokens: 2, completionTokens: 3 } }),
+        record('ui-key-deleted', keyMetricsTest.goneId, 3, { keyName: '已删除 <script>alert(1)</script>' }),
+        record('ui-key-unknown', null, 1)
+      ] }) });
+      await loadConfig();
+    })()`);
+    try {
+      assert.equal(await evaluate('document.querySelectorAll("#keyStatsBody tr").length'), 5);
+      assert.equal(await evaluate('document.querySelector("#keyStatsBody tr").dataset.keyId === keyMetricsTest.primary.id'), true, '按请求数降序排列');
+      const primaryCells = await keyStatsCells('keyMetricsTest.primary.id');
+      assert.match(primaryCells[0], /改名的默认 Key/);
+      assert(!primaryCells[0].includes('历史名称'), '优先显示当前配置名称');
+      assert.deepEqual(primaryCells.slice(1, 9), ['2', '1', '1', '50.0%', '1', '13', '6', '19']);
+      assert.equal(primaryCells[9], await evaluate('formatTime(new Date(2026, 9, 2, 12).toISOString())'));
+      assert.match((await keyStatsCells('keyMetricsTest.disabled.id'))[0], /已停用/);
+      assert.match((await keyStatsCells('keyMetricsTest.goneId'))[0], /已删除 \/ 不在当前配置/);
+      assert.match((await keyStatsCells('""'))[0], /未归属 Key/);
+      assert.match(await evaluate('document.querySelector("#keyStatsHint").textContent'), /无法恢复归属/);
+      assert.equal(await evaluate('document.querySelectorAll("#keyStatsBody img, #keyStatsBody script, #keyStatsBody [onerror]").length'), 0, 'Key 名称和 ID 必须转义');
+      assert.equal(await evaluate('state.config.localApiKeys.every(key => !document.querySelector("#keyStatsBody").innerHTML.includes(key.key))'), true, '统计表不能显示密钥内容');
+      await screenshot('key-metrics-desktop', '.panel[data-tab-page="metrics"]');
+      for (const width of [768, 390, 320]) {
+        await viewport(width);
+        assert.equal(await evaluate(noOverflow), true, `${width}px 分 Key 表格只能在容器内滚动，不能撑宽页面`);
+        assert.equal(await style('.key-stats-table', 'overflowX'), 'auto');
+        assert.equal(await evaluate('document.querySelector(".key-stats-table").tabIndex'), 0, '横向表格应支持键盘聚焦');
+        await screenshot(`key-metrics-${width}`, '.panel[data-tab-page="metrics"]');
+        assert.equal(await evaluate(`(() => {
+          const table = document.querySelector('.key-stats-table');
+          table.scrollLeft = table.scrollWidth;
+          const lastCell = table.querySelector('tbody tr td:last-child').getBoundingClientRect();
+          const bounds = table.getBoundingClientRect();
+          return table.scrollLeft > 0 && lastCell.left >= bounds.left && lastCell.right <= bounds.right;
+        })()`), true, `${width}px 横向滚动后应能完整查看最近调用列`);
+        await screenshot(`key-metrics-${width}-scrolled`, '.key-stats-table');
+        await evaluate('document.querySelector(".key-stats-table").scrollLeft = 0');
+      }
+      await screenshot('key-metrics-mobile', '.panel[data-tab-page="metrics"]');
+      await viewport(1440);
+      await evaluate(`(async () => {
+        switchTab('logs');
+        await refreshLogKeyOptions();
+        document.querySelector('#logKeyFilter').value = keyMetricsTest.primary.id;
+        await applyLogFilters();
+        await refreshMetrics();
+      })()`);
+      assert.equal(await evaluate('state.logPage.total'), 2, '自动刷新分 Key 统计不能覆盖已筛选日志的分页信息');
+      assert.equal(await evaluate('document.querySelectorAll("#requestLogBody .log-row").length'), 2);
+      await evaluate(`(async () => {
+        switchTab('metrics');
+        document.querySelector('#metricsRangeFrom').value = '2026-10-02T00:00';
+        document.querySelector('#metricsRangeTo').value = '2026-10-02T23:59';
+        await applyMetricsRange();
+        await refreshMetrics();
+      })()`);
+      assert.equal(await evaluate('document.querySelector("#keyStatsScopeTitle").textContent'), '按 Key 统计（所选时间范围）');
+      assert.deepEqual((await keyStatsCells('keyMetricsTest.primary.id')).slice(1, 9), ['1', '0', '1', '0.0%', '0', '3', '2', '5']);
+      assert.equal(await evaluate('document.querySelectorAll("#keyStatsBody tr").length'), 3, '范围内无记录的历史 Key 不显示，当前配置仍补零');
+      assert.equal(await evaluate('state.metrics.totals.requests'), 5, '范围刷新仍维护最新全量快照');
+      assert.equal(await evaluate('state.metricsRange.data.totals.requests'), 2);
+      assert.match(await evaluate('document.querySelector("#keyStatsHint").textContent'), /仅覆盖当前保留/);
+      await evaluate(`(async () => {
+        await api('/api/admin/metrics/import', { method: 'POST', body: JSON.stringify([{ id: 'ui-key-new', keyId: keyMetricsTest.primary.id, keyName: '改名的默认 Key', success: true, status: 200, finishedAt: new Date(2026, 9, 2, 22).toISOString(), usage: { promptTokens: 3, completionTokens: 2 } }]) });
+        await refreshMetrics();
+        resetMetricsRange();
+      })()`);
+      await waitFor('!state.metricsRefreshInFlight');
+      assert.equal(await evaluate('state.metrics.totals.requests'), 6);
+      assert.deepEqual((await keyStatsCells('keyMetricsTest.primary.id')).slice(1, 9), ['3', '2', '1', '66.7%', '1', '16', '8', '24']);
+      // 故意延迟范围自动刷新，返回全部后不能被旧响应重新切回范围视图。
+      assert.equal(await evaluate(`(async () => {
+        await applyMetricsRange();
+        const original = loadMetricsRange;
+        let release;
+        loadMetricsRange = async (...args) => { const result = await original(...args); await new Promise(resolve => { release = resolve; }); return result; };
+        try {
+          const pending = refreshMetrics();
+          while (!release) await new Promise(resolve => setTimeout(resolve, 10));
+          resetMetricsRange();
+          release();
+          await pending;
+          return state.metricsRange === null;
+        } finally { loadMetricsRange = original; }
+      })()`), true, '过期的自动刷新响应不能恢复已取消的时间范围');
+      await evaluate(`(async () => {
+        const records = Array.from({ length: 105 }, (_, index) => ({
+          id: 'ui-page-' + index, keyId: keyMetricsTest.primary.id, keyName: '改名的默认 Key',
+          success: true, status: 200, finishedAt: new Date(2026, 9, 4, 12, 0, index).toISOString()
+        }));
+        await api('/api/admin/metrics/import', { method: 'POST', body: JSON.stringify(records) });
+        switchTab('logs');
+        document.querySelector('#logSearchInput').value = 'ui-page-';
+        document.querySelector('#logKeyFilter').value = keyMetricsTest.primary.id;
+        await applyLogFilters();
+        await refreshMetrics();
+      })()`);
+      assert.equal(await evaluate('state.logPage.total'), 105);
+      assert.equal(await evaluate('state.logPage.hasMore'), true, '刷新后必须保留筛选结果的下一页');
+      assert.equal(await evaluate('document.querySelectorAll("#requestLogBody .log-row").length'), 100);
+      await evaluate('document.querySelector("#loadMoreLogsButton").click()');
+      await waitFor('!state.loadingMoreLogs && document.querySelectorAll("#requestLogBody .log-row").length === 105');
+      await evaluate('refreshMetrics()');
+      assert.equal(await evaluate('state.logPage.total'), 105);
+      assert.equal(await evaluate('state.logPage.hasMore'), false);
+      assert.equal(await evaluate('document.querySelector("#requestLogMore").classList.contains("hidden")'), true);
+      assert.equal(await evaluate(`(() => {
+        const ids = [...document.querySelectorAll('#requestLogBody .log-row td:first-child code')].map(item => item.textContent);
+        return ids.length === 105 && new Set(ids).size === 105 && ids.every(id => id.startsWith('ui-page-'));
+      })()`), true, '分页必须沿用关键字和 Key 筛选，自动刷新不能清除已加载的行');
+      await evaluate('switchTab("metrics")');
+      await evaluate(`(async () => {
+        const confirm = window.confirm;
+        window.confirm = () => true;
+        try { await clearMetrics(); } finally { window.confirm = confirm; }
+      })()`);
+      assert.equal(await evaluate('document.querySelectorAll("#keyStatsBody tr").length'), 3, '清空统计后只保留当前配置 Key 的零值行');
+      assert.deepEqual((await keyStatsCells('keyMetricsTest.primary.id')).slice(1), ['0', '0', '0', '-', '0', '0', '0', '0', '-']);
+    } finally {
+      await evaluate(`(async () => {
+        await api('/api/admin/metrics', { method: 'DELETE' });
+        for (const key of [keyMetricsTest.disabled, keyMetricsTest.unused]) await api('/api/admin/local-keys/' + key.id, { method: 'DELETE' });
+        await api('/api/admin/local-keys/' + keyMetricsTest.primary.id, { method: 'PUT', body: JSON.stringify({ name: keyMetricsTest.primary.name }) });
+        state.metricsRange = null;
+        resetLogFilters();
+        await loadConfig();
+        delete window.keyMetricsTest;
+        state.metricsRefreshTimer = window.setInterval(() => refreshMetrics(), 5000);
+      })()`);
+    }
+    await waitFor('document.querySelector("#requestLogSummary").textContent === "仅记录元数据"');
     await screenshot('metrics-desktop');
     await evaluate('switchTab("logs")');
     await waitFor(settled);
@@ -290,7 +437,7 @@ async function main() {
     assert.equal(await style('#passwordLoginForm', 'display'), 'none');
     assert.equal(await style('#loginActions', 'display'), 'grid');
     assert.deepEqual(exceptions, [], '浏览器不应出现未处理异常');
-    console.log('UI browser tests passed (navigation, about page, dialogs, responsive layout, login, reduced motion)');
+    console.log('UI browser tests passed (navigation, key metrics, about page, dialogs, responsive layout, login, reduced motion)');
   } finally {
     for (const task of pending.values()) clearTimeout(task.timer);
     socket?.close();

@@ -165,6 +165,13 @@ table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 11p
 th, td { padding: 11px 12px; border-bottom: 1px solid #293234; text-align: left; white-space: nowrap; }
 th { color: var(--muted); background: #14191a; font-weight: 600; }
 tr:last-child td { border-bottom: 0; }
+.key-stats-table { max-height: 480px; overflow-y: auto; }
+.key-stats-table table { min-width: 1050px; }
+.key-stats-table thead th { position: sticky; top: 0; z-index: 1; }
+.key-stats-table th:not(:first-child), .key-stats-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.key-stats-table .key-stat-identity { min-width: 180px; max-width: 300px; white-space: normal; overflow-wrap: anywhere; }
+.key-stat-identity strong, .key-stat-identity code { display: block; margin-bottom: 6px; }
+.key-stat-identity code { color: var(--muted); font-size: 10px; }
 .request-log-table { max-height: calc(100dvh - 320px); overflow-y: auto; }
 .request-log-table table { min-width: 1200px; }
 .request-log-table thead th { position: sticky; top: 0; z-index: 1; background: #14191a; }

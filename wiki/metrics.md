@@ -6,7 +6,7 @@
 
 | 文件 | 内容 | 写入方式 |
 | --- | --- | --- |
-| `data/metrics.json` | 聚合计数（总量 + 按上游统计） | 每次请求整份原子重写 |
+| `data/metrics.json` | 聚合计数（总量 + 按上游 + 按本地 Key ID 统计） | 每次请求整份原子重写 |
 | `data/metrics-log.jsonl` | 逐条请求明细，一行一条 JSON | append-only 追加 |
 
 ### `metrics.json` 结构
@@ -21,6 +21,14 @@
   "byUpstream": {
     "站点名": { "requests": 0, "successful": 0, "failed": 0,
                 "promptTokens": 0, "completionTokens": 0, "totalTokens": 0 }
+  },
+  "byKey": {
+    "key_<hex>": {
+      "keyId": "key_<hex>", "keyName": "桌面应用",
+      "requests": 0, "successful": 0, "failed": 0, "failovers": 0,
+      "promptTokens": 0, "completionTokens": 0, "totalTokens": 0,
+      "lastRequestAt": null
+    }
   }
 }
 ```
@@ -28,6 +36,19 @@
 - `byUpstream` 按上游**名称**分组；每次 `recordRequest` 会为 `attempts` 中的每个上游各计一笔，
   token 只记给最终成功响应的那个站。
 - 文件损坏时启动不崩溃（回退为空指标）。
+
+## 按 Key 统计
+
+后台「请求统计」提供分 Key 表格：请求数、成功/失败、成功率、故障转移、输入/输出/总 Token、最近调用时间，按请求数降序排列，每 5 秒刷新。表格与上方总量、按上游统计共用时间范围筛选。
+
+- 按 **Key ID** 而非名称归并：同名不同 Key 分开计数，改名不拆分历史。表格优先显示当前配置的名称，`byKey[].keyName` 保存最近已记录请求中的名称。
+- 已配置但未使用的 Key 在页面补零展示（无调用时成功率和最近调用显示 `-`）；停用和删除不会清除历史，页面会标注状态。统计接口只返回实际有累计记录的 Key。
+- OAuth 调用归入授权的来源 Key；附件转译子请求也单独归入发起者 Key。**同一请求内的重试/切换只计一个请求和一份最终用量**，同上游重试不算故障转移。
+- 延续现有总量口径：统计进入模型转发流程的请求及附件转译子请求；鉴权失败、模型权限拒绝、限流、请求体解析失败、模型列表查询与后台能力探测不计入。上游不报告 Token 时按零记录，不自行估算。
+- `lastRequestAt` 为所统计请求的最新完成时间（缺少时回退开始时间），以 ISO 时间返回；无法恢复时间时为 `null`。成功率由 `successful / requests` 计算。
+- 全量 `byKey` 与总计同存于 `metrics.json`，**重启和 JSONL 裁剪不会降低累计**；清空统计会同时清除。时间范围统计只覆盖当前保留明细，不是无限期历史查询。
+- 字典中的空字符串键 `""` 表示**未归属 Key**，其 `keyId` 为 `null`、`keyName` 为空；用于无来源 Key 的日志，以及升级时无法恢复归属的旧累计。不会凭名称猜测归属。
+- 统计与导出中只记录 Key ID/名称，不记录密钥内容或 OAuth 令牌；接口继续要求管理后台认证，不新增面向普通调用 Key 的查询权限。
 
 ### `metrics-log.jsonl` 单条日志字段
 
@@ -68,7 +89,7 @@
   连接失败等没有上游响应的情况不记录该字段。
 
 管理页面可将最近 100 条记录或当前日志上限内的全部记录导出为 JSON。导出内容包含
-聚合 totals、byUpstream 和 records 明细；`records` 按时间正序排列，便于归档或分析。
+聚合 totals、byUpstream、byKey 和 records 明细；`records` 按时间正序排列，便于归档或分析。
 
 ## 请求日志搜索与筛选
 
@@ -125,8 +146,8 @@
 
 按时间范围统计明细日志，参数为 ISO 时间（含 `datetime-local` 本地时间转换后的值），闭区间：
 
-- 返回 `{from, to, matched, totals, byUpstream}`；`matched` 为命中明细条数。
-- 聚合口径与实时统计完全一致（同一 `aggregateInto`：totals、byUpstream、故障转移判定、
+- 返回 `{from, to, matched, totals, byUpstream, byKey}`；`matched` 为命中明细条数。
+- 聚合口径与实时统计完全一致（同一 `aggregateInto`：totals、byUpstream、byKey、故障转移判定、
   token 归属最后尝试）。参数缺失、非法或开始晚于结束返回 400。
 - 后台「按时间统计」使用该接口；范围模式下 5 秒自动刷新仍刷同一时间窗口，新请求会
   计入当前视图。重置后返回全量统计。
@@ -135,7 +156,14 @@
 
 管理页面可以导出最近 100 条或当前日志上限内的全部用量记录。导出文件中的 `records`
 按时间正序排列。`POST /api/admin/metrics/import` 接受该导出对象或 records 数组，以请求
-`id` 去重；已有记录和同一文件内的重复记录不会重复计入，导入后会从保留明细重建聚合统计。
+`id` 去重；当前保留日志和同一文件内的重复记录不会重复计入。只将新增记录累加到已有
+`totals`、`byUpstream`、`byKey`，不会因旧明细已裁剪而重置全量累计。支持导出中的 camelCase
+Token 字段及上游风格的 snake_case 字段。
+
+**导入边界：**去重范围是当前保留的日志，不维护无限期请求 ID 索引；重新导入已经被裁剪的
+旧记录可能重复累计。导出的聚合快照用于查看/分析，导入仅处理 `records`，不会直接覆盖或
+叠加快照（避免混入重复计数）。因此导出中的历史累计若已没有对应明细，清空后仅靠用量导入
+无法完整恢复；完整迁移应一起备份数据目录中的聚合和日志文件。
 
 ## 旧数据迁移
 
@@ -145,8 +173,13 @@
    （截断到 `MAX_LOGS` 条）。
 2. 写完后 `saveMetrics()` 落盘，从 `metrics.json` 中移除内联 `logs`（以后不再有该字段）。
 
-迁移与压实已通过独立临时脚本验证；`model-groups.test.js` 中也有对分页接口存在性的断言。
-（目前尚无专门的单测文件覆盖压实/迁移逻辑，见 [开发与测试](development.md)。）
+旧 `metrics.json` 缺少 `byKey` 时，首次启动从当前保留日志回填分 Key 统计，但保持原有
+`totals` 和 `byUpstream` 不变；超出保留日志、无法确定来源的历史累计归入“未归属 Key”。
+如果旧计数与明细冲突，保守地把原计数全部标为未归属，不生成负数或猜测分摊。
+迁移结果原子保存，后续重启不会重复回填。
+
+`test/key-metrics.test.js` 覆盖迁移、重启、压实、导入和范围聚合；完整 HTTP 与浏览器覆盖见
+[开发与测试](development.md)。
 
 ## 相关配置
 

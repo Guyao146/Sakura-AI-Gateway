@@ -53,7 +53,7 @@
             <button type="button" class="tab" role="tab" aria-selected="false" data-tab="about"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v5h1"/></svg>关于我们</button>
           </div>
         </nav>
-        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v3.2.0</strong></div>
+        <div class="sidebar-version"><span class="muted">Sakura-AI-Gateway</span><strong>v3.3.0</strong></div>
       </aside>
 
       <div class="content">
@@ -169,6 +169,9 @@
           <span id="metricsRangeHint" class="muted"></span>
         </div>
         <div class="stats-grid" id="statsGrid"></div>
+        <div class="subheading-row"><h3 id="keyStatsScopeTitle">按 Key 统计（全部）</h3><span class="muted">按请求数排序 · 每 5 秒自动刷新</span></div>
+        <p id="keyStatsHint" class="help">按本地 Key ID 汇总，OAuth 调用归入来源 Key；不显示密钥内容。</p>
+        <div class="table-wrap key-stats-table" role="region" aria-labelledby="keyStatsScopeTitle" tabindex="0"><table><thead><tr><th scope="col">本地 Key</th><th scope="col">请求数</th><th scope="col">成功</th><th scope="col">失败</th><th scope="col">成功率</th><th scope="col">故障转移</th><th scope="col">输入 Token</th><th scope="col">输出 Token</th><th scope="col">总 Token</th><th scope="col">最近调用</th></tr></thead><tbody id="keyStatsBody"></tbody></table></div>
         <div class="subheading-row"><h3 id="metricsScopeTitle">按上游统计（全部）</h3><span class="muted">每 5 秒自动刷新</span></div>
         <div id="upstreamStats" class="upstream-stats"></div>
       </section>

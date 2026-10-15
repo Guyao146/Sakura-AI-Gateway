@@ -220,14 +220,17 @@ Chat Completions；包含 `computer`、shell、apply_patch、`previous_response_
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/admin/metrics` | 聚合计数 + 一页日志；支持 `?limit=&offset=` |
+| GET | `/api/admin/metrics` | 聚合计数（`totals`、`byUpstream`、按本地 Key ID 的 `byKey`）+ 一页日志；支持 `?limit=&offset=` |
 | GET | `/api/admin/metrics/logs?keyword=&keyId=&from=&to=&offset=&limit=` | 请求日志分页与搜索：`keyword` 匹配请求 ID / 模型 / 上游 / Key 名称 / 错误 / 内容摘要，`keyId` 按本地 Key 过滤，`from`/`to` 为闭区间时间筛选；任一筛选参数存在时返回 `{items, limit, offset, total, hasMore, maxLogs, filters}`，全缺省时等价于纯分页 |
 | GET | `/api/admin/metrics/keys` | 近期日志中出现过的本地 Key 列表，含 `keyName` 与请求次数，不返回 Key 本身 |
-| GET | `/api/admin/metrics/range?from=&to=` | 按时间范围（闭区间，ISO 时间）聚合统计，返回 `{from, to, matched, totals, byUpstream}` |
-| GET | `/api/admin/metrics/export?scope=recent\|all` | 导出最近 100 条或当前保留的全部用量记录（JSON） |
+| GET | `/api/admin/metrics/range?from=&to=` | 按时间范围（闭区间，ISO 时间）聚合当前保留日志，返回 `{from, to, matched, totals, byUpstream, byKey}` |
+| GET | `/api/admin/metrics/export?scope=recent\|all` | 导出最近 100 条或当前保留的全部用量记录（JSON），附全量 `totals`、`byUpstream`、`byKey` |
+| POST | `/api/admin/metrics/import` | 接受用量导出对象或记录数组，对保留日志范围内的请求 ID 去重后累加新增用量；不重置已有累计 |
 | DELETE | `/api/admin/metrics` | 清空聚合计数与 JSONL 日志 |
 
 `limit` 默认 100、最大 500；`offset` 默认 0。详见 [指标与请求日志](metrics.md)。
+
+`byKey` 以本地 Key ID 为键，每项包含 `keyId`、`keyName`、`requests`、`successful`、`failed`、`failovers`、`promptTokens`、`completionTokens`、`totalTokens`、`lastRequestAt`（ISO 时间或 `null`）；不包含密钥本身。空字符串键 `""` 表示未归属 Key，其 `keyId` 为 `null`。OAuth 与附件转译调用归入来源 Key，删除 Key 不删除历史统计。`keyName` 是最近已记录请求中的名称，后台优先显示当前配置中的名称；无请求的 Key 不产生汇总项，后台会补零显示。
 
 ---
 

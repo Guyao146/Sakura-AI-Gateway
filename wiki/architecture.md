@@ -42,7 +42,7 @@ Sakura-AI-Gateway/
 
 ### `src/metrics.js`
 - 聚合计数与请求日志分离存储：
-  - `metrics.json`：总量 + 按上游统计的计数器（每次请求重写）。
+  - `metrics.json`：总量 + 按上游 + 按本地 Key ID 统计的计数器（每次请求原子重写；全量计数不随日志裁剪减少）。
   - `metrics-log.jsonl`：逐条请求明细，append-only 追加，定期压实。
 - 提供 `getMetrics({limit, offset})`、`getLogs({limit, offset})`、`clearMetrics()`。
 - 详见 [指标与请求日志](metrics.md)。

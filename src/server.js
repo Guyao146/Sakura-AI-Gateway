@@ -1931,11 +1931,13 @@ async function translateModality(part, protocol, translator, localModel, targetU
     const text = textFromContent(converted.choices?.[0]?.message?.content).trim();
     if (!text || text.length > 64000 || converted.choices?.[0]?.finish_reason === 'length') fail('模态转译没有返回完整文本，请缩小附件后重试', 502);
     safeRecordRequest({ id: `${requestId}-translation-${makeId('part')}`, startedAt, finishedAt: nowIso(), durationMs: Date.now() - startedTime,
+      keyId: localKey?.id, keyName: localKey?.name,
       protocol, model: translator, upstream: upstream.name, upstreamModel: plan.body.model, success: true, status: 200, stream: false, usage: payload.usage });
     return `[附件转译（${partModality(part)}，由 ${translator} 生成，可能存在误差）]\n${text}\n[附件转译结束]`;
   } catch (error) {
     const message = error.name === 'AbortError' ? '模态转译超时' : sanitizeUpstreamMessage(upstream, error.message);
     safeRecordRequest({ id: `${requestId}-translation-${makeId('part')}`, startedAt, finishedAt: nowIso(), durationMs: Date.now() - startedTime,
+      keyId: localKey?.id, keyName: localKey?.name,
       protocol, model: translator, upstream: upstream.name, upstreamModel: plan.body.model, success: false, status: 502, stream: false, usage: payload?.usage, error: message });
     fail(message, error.statusCode || 502, error.code || 'modality_translation_failed');
   } finally {
@@ -3414,6 +3416,7 @@ async function handleAdmin(req, res, pathname) {
       scope,
       totals: snapshot.totals,
       byUpstream: snapshot.byUpstream,
+      byKey: snapshot.byKey,
       records: requestLogs
     });
     return;

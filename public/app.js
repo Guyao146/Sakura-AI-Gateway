@@ -14,6 +14,8 @@ const state = {
 metricsRefreshTimer: null,
 // 时间范围统计：{ from, to, data }；为 null 时展示全部统计。
 metricsRange: null,
+// 用户切换统计范围时丢弃在途的旧响应，避免自动刷新恢复已取消的范围。
+metricsViewVersion: 0,
 // 请求日志筛选：关键字 / Key / 时间段，任一为空表示不限制。
 logFilters: { keyword: '', keyId: '', from: '', to: '' },
 logSearchTimer: null
@@ -721,12 +723,37 @@ async function exportUsage(scope) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
+function renderKeyStats(source, range) {
+  $('#keyStatsScopeTitle').textContent = range ? '按 Key 统计（所选时间范围）' : '按 Key 统计（全部）';
+  const items = new Map(Object.entries(source.byKey || {}).map(([keyId, item]) => [keyId, { ...item, keyId }]));
+  const configuredKeys = new Map((state.config?.localApiKeys || []).map((item) => [item.id, item]));
+  for (const keyId of configuredKeys.keys()) {
+    if (!items.has(keyId)) items.set(keyId, { keyId, requests: 0 });
+  }
+  const rows = [...items.values()].sort((a, b) => (b.requests || 0) - (a.requests || 0) || a.keyId.localeCompare(b.keyId));
+  $('#keyStatsBody').innerHTML = rows.length ? rows.map((item) => {
+    const key = configuredKeys.get(item.keyId);
+    const name = item.keyId ? (key?.name || item.keyName || item.keyId) : '未归属 Key';
+    const status = !item.keyId ? '旧数据 / 无来源 Key' : !key ? '已删除 / 不在当前配置' : key.enabled ? '已启用' : '已停用';
+    const rate = item.requests ? `${((Number(item.successful || 0) / item.requests) * 100).toFixed(1)}%` : '-';
+    const values = [item.requests, item.successful, item.failed].map(formatNumber);
+    values.push(rate, ...[item.failovers, item.promptTokens, item.completionTokens, item.totalTokens].map(formatNumber), formatTime(item.lastRequestAt));
+    return `<tr data-key-id="${escapeHtml(item.keyId)}"><td class="key-stat-identity"><strong>${escapeHtml(name)}</strong>${item.keyId ? `<code>${escapeHtml(item.keyId)}</code>` : ''}<span class="tag ${key?.enabled ? 'active' : 'off'}">${escapeHtml(status)}</span></td>${values.map((value) => `<td>${escapeHtml(value)}</td>`).join('')}</tr>`;
+  }).join('') : '<tr><td colspan="10" class="empty">还没有本地 Key 或请求统计。</td></tr>';
+  const scope = range
+    ? `时间范围统计仅覆盖当前保留的最近 ${formatNumber(state.metrics?.logPage?.maxLogs || 5000)} 条日志。`
+    : '全量计数持久化保存，不随日志裁剪减少。';
+  const unknown = items.has('') ? '“未归属 Key”包含旧版本无法恢复归属的历史累计或未记录 Key 的请求。' : '';
+  $('#keyStatsHint').textContent = `按本地 Key ID 汇总，OAuth 与附件转译调用归入来源 Key；不显示密钥内容。${scope}${unknown}`;
+}
+
 function renderMetrics(options = {}) {
   const range = state.metricsRange;
   // 渲染数据源：范围模式下用范围结果，否则用全量统计。
   const source = range ? range.data : state.metrics;
   if (!source) {
     $('#statsGrid').innerHTML = '<div class="empty">统计暂时不可用。</div>';
+    $('#keyStatsBody').innerHTML = '<tr><td colspan="10" class="empty">统计暂时不可用。</td></tr>';
     $('#requestLogMore')?.classList.add('hidden');
     return;
   }
@@ -741,6 +768,7 @@ function renderMetrics(options = {}) {
     ['输入 Token', formatNumber(totals.promptTokens)],
     ['输出 Token', formatNumber(totals.completionTokens)]
   ].map(([label, value]) => `<div class="stat-card"><div class="stat-value">${escapeHtml(value)}</div><div class="stat-label">${escapeHtml(label)}</div></div>`).join('');
+  renderKeyStats(source, range);
 
   const scopeTitle = $('#metricsScopeTitle');
   if (scopeTitle) {
@@ -753,8 +781,8 @@ function renderMetrics(options = {}) {
 
   // 范围统计只替换统计卡片，请求日志仍跟随全量快照。
   const logs = state.metrics?.logs || [];
-  state.logPage = state.metrics?.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
   if (!options.preserveLogs) {
+    state.logPage = state.metrics?.logPage || { offset: 0, limit: logs.length, total: logs.length, hasMore: false, maxLogs: logs.length };
     $('#metricsEmpty').classList.toggle('hidden', logs.length > 0);
     $('#requestLogBody').innerHTML = logs.map(renderLogRow).join('');
   }
@@ -764,13 +792,18 @@ function renderMetrics(options = {}) {
 async function refreshMetrics() {
   if (!state.config || state.metricsRefreshInFlight) return;
   state.metricsRefreshInFlight = true;
+  const range = state.metricsRange;
+  const viewVersion = state.metricsViewVersion;
+  const previousSnapshot = state.metrics;
   try {
-    if (state.metricsRange) {
-      // 范围模式下刷新的是同一时间窗口，新请求会计入当前视图。
-      state.metricsRange = await loadMetricsRange(state.metricsRange.from, state.metricsRange.to);
-    } else {
-      state.metrics = await api('/api/admin/metrics');
-    }
+    // 范围模式也更新全量快照，返回全部统计时不再显示旧计数。
+    const [snapshot, rangeResult] = await Promise.all([
+      api('/api/admin/metrics'),
+      range ? loadMetricsRange(range.from, range.to) : null
+    ]);
+    if (viewVersion !== state.metricsViewVersion || previousSnapshot !== state.metrics || range !== state.metricsRange) return;
+    state.metrics = snapshot;
+    if (range) state.metricsRange = rangeResult;
     renderMetrics({ preserveLogs: true });
   } catch {
     // Keep the last successful snapshot visible during a temporary failure.
@@ -805,16 +838,21 @@ async function applyMetricsRange() {
   const from = formatRangeInput(fromInput);
   const to = formatRangeInput(toInput);
   if (new Date(from) > new Date(to)) { toast('开始时间不能晚于结束时间'); return; }
+  const viewVersion = ++state.metricsViewVersion;
   try {
-    state.metricsRange = await loadMetricsRange(from, to);
+    const range = await loadMetricsRange(from, to);
+    if (viewVersion !== state.metricsViewVersion) return;
+    state.metricsRange = range;
     renderMetrics({ preserveLogs: true });
     toast(`已统计 ${state.metricsRange.data.matched} 条时间范围内的请求`);
   } catch (error) { toast(error.message, 'error'); }
 }
 
 function resetMetricsRange() {
+  state.metricsViewVersion += 1;
   state.metricsRange = null;
   renderMetrics({ preserveLogs: true });
+  refreshMetrics();
   toast('已返回全部时间段的请求统计');
 }
 
@@ -1574,6 +1612,7 @@ async function createKey(event) {
 
 async function clearMetrics() {
   if (!window.confirm('确定清空所有请求统计和最近日志吗？此操作不可撤销。')) return;
+  state.metricsViewVersion += 1;
   try {
     state.metrics = await api('/api/admin/metrics', { method: 'DELETE' });
     state.metricsRange = null;
@@ -1590,8 +1629,10 @@ async function importUsageFile(file) {
     const records = Array.isArray(data) ? data : data?.records;
     if (!Array.isArray(records)) throw new Error('文件不是有效的用量导出文件：缺少 records 数组');
     if (!window.confirm(`确定导入 ${records.length} 条用量记录吗？已有相同请求 ID 的记录会自动跳过。`)) return;
+    state.metricsViewVersion += 1;
     const result = await api('/api/admin/metrics/import', { method: 'POST', body: JSON.stringify(data) });
     state.metrics = result.metrics;
+    state.metricsRange = null;
     renderMetrics();
     toast(`导入完成：新增 ${result.imported} 条，重复 ${result.duplicates} 条，当前保留 ${result.retained} 条`);
   } catch (error) { toast(`导入用量失败：${error.message}`, 'error'); }
@@ -1806,8 +1847,6 @@ $('#logSearchInput').addEventListener('input', () => {
 });
 $('#exportRecentUsageButton').addEventListener('click', () => exportUsage('recent'));
 $('#exportAllUsageButton').addEventListener('click', () => exportUsage('all'));
-$('#importUsageButton').addEventListener('click', () => $('#usageFileInput').click());
-$('#usageFileInput').addEventListener('change', async (event) => { await importUsageFile(event.target.files[0]); event.target.value = ''; });
 $('#importUsageButton').addEventListener('click', () => $('#usageFileInput').click());
 $('#usageFileInput').addEventListener('change', async (event) => {
   await importUsageFile(event.target.files[0]);

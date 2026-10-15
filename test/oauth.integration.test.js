@@ -172,6 +172,12 @@ async function main() {
     assert.equal(deniedMessages.body.type, 'error');
     assert.equal(deniedMessages.body.error.type, 'permission_error');
     assert.equal(deniedMessages.body.error.code, 'model_not_allowed');
+    const keyMetrics = ok(await request('/api/admin/metrics'));
+    assert.equal(keyMetrics.byKey[restricted.id].requests, 4, 'OAuth 模型调用应归入来源 Key，鉴权拒绝不计入模型请求');
+    assert.equal(keyMetrics.byKey[restricted.id].successful, 4);
+    assert.equal(keyMetrics.byKey[restricted.id].totalTokens, 8);
+    assert.equal(JSON.stringify(keyMetrics.byKey).includes(tokens.access_token), false, '统计不能泄露 OAuth 令牌');
+    assert.equal(JSON.stringify(keyMetrics.byKey).includes(restricted.key), false, '统计不能泄露来源 Key');
     // 首次连接的自动登记：接入方不预登记 Client，账号确认时选择来源 Key。
     const autoRedirect = 'http://localhost:34567/callback?source=auto';
     const autoParams = new URLSearchParams({ client_id: 'auto', name: 'Life Dashboard', redirect_uri: autoRedirect, response_type: 'code', state: 'auto-state',

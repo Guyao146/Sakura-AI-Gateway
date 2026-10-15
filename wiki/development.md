@@ -44,6 +44,8 @@ npm.cmd test
 | `test/model-selection.integration.test.js` | 集成 | 模型选择保存、`upstreamIds` 轮询池、固定站、旧备份合并迁移 |
 | `test/model-case.integration.test.js` | 集成 | 模型名/中转站大小写合并、按各站拼写转发、重复选择拒绝、备份导入合并 |
 | `test/metrics-range.integration.test.js` | 集成 | `/api/admin/metrics/range` 参数校验、闭区间命中、范围与全量统计互不影响 |
+| `test/key-metrics.test.js` | 单元/存储 | 分 Key 聚合、同名/改名、重试不重复计数、特殊 ID、旧数据迁移、重启/压实、导入去重与 camelCase 用量 |
+| `test/key-metrics.integration.test.js` | 集成 | 三协议与流式分 Key 用量、停用/删除保留、导出/导入、重启持久化、管理认证与密钥隔离 |
 | `test/log-search.integration.test.js` | 集成 | 内容摘要入日志、按关键字 / Key / 时间段搜索 `/api/admin/metrics/logs`、Key 列表脱敏、非法时间参数 400 |
 | `test/integration-auth.test.js` | 集成 | 接入授权 verify/revoke/status、令牌哈希、Key 删除级联取消、备份导入保留 |
 | `test/oauth.test.js` | 单元 | 回调白名单、S256 PKCE、CSRF/会话绑定、拒绝/过期/重放、刷新轮换与缩权、权限快照、安全回跳 |
@@ -65,6 +67,8 @@ npm.cmd run test:ui
 ```
 
 `test:ui` 包含原有 UI 基线和新增 OAuth 浏览器回归。`test/oauth.browser.js` 通过现有 CDP + Node 内置 WebSocket 测试真实的应用登记／非法回调、账号登录回跳、同意／拒绝、回调 state/issuer、后台撤销、应用编辑／停用／删除、文本注入转义与窄屏布局。浏览器使用临时用户配置，接入回调由本机测试服务器处理，不安装自动化依赖。
+
+`test/ui.browser.test.js` 同时覆盖分 Key 表格：当前名称、停用/删除/未使用/未归属行、密钥不显示与文本转义、时间范围切换及延迟刷新竞态；用 105 条筛选日志验证“加载更多”与统计自动刷新互不干扰，并检查桌面及 768/390/320px 下的容器内横向滚动。设置 `GATEWAY_UI_SCREENSHOTS` 为截图目录可保存各屏宽和横向滚动后的截图。
 
 集成测试模式：
 
@@ -105,10 +109,9 @@ npm.cmd run test:ui
 1. **轮询池「至少两站」保护仅在前端**：直接调 `PUT /api/admin/model-selections`
    提交 <2 个 `upstreamIds` 后端不校验。建议在 `saveModelSelections` 增加子集校验：
    过滤不存在/已停用站，长度 <2 时回退为全部站点。
-2. **~~JSONL 压实与迁移无专项单测~~（部分完成）**：`test/metrics.test.js` 已用注入的
-   临时 `DATA_DIR` 覆盖 `recordRequest/getLogs/importUsageRecords` 与
-   `upstreamError`/`attempts[].error` 的归一化；**JSONL 压实与旧版内联日志迁移仍未覆盖**，
-   只靠临时脚本验证，建议补对 `appendLog` 触发压实、`loadLogs` 迁移路径的断言。
+2. **~~JSONL 压实与迁移无专项单测~~（已覆盖）**：`test/metrics.test.js` 覆盖日志与错误归一化；
+   `test/key-metrics.test.js` 额外覆盖实际压实、旧版内联/JSONL 回填、重启持久化、未知历史累计
+   和裁剪后导入不丢失全量计数。
 3. **~~`.gitignore` 未包含 `data/metrics-log.jsonl`~~**：已修复，运行时日志不会被提交。
 4. **模型选择器与手工路由冲突**：同名冲突会在保存时报错，但前端反馈路径可再打磨。
 5. **日志只保留成功/失败的摘要**：不含请求体/响应体，若需排查内容级问题需另加审计日志。

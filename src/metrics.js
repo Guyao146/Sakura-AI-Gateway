@@ -13,19 +13,25 @@ const MAX_ATTEMPTS_PER_LOG = 12;
 // 客户端请求内容的可搜索摘要长度：只保留最后一条用户消息的截断文本。
 const MAX_CONTENT_DIGEST = 500;
 
+function emptyCounters() {
+  return {
+    requests: 0,
+    successful: 0,
+    failed: 0,
+    failovers: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0
+  };
+}
+
 function emptyMetrics() {
   return {
     version: 1,
-    totals: {
-      requests: 0,
-      successful: 0,
-      failed: 0,
-      failovers: 0,
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0
-    },
-    byUpstream: {}
+    totals: emptyCounters(),
+    byUpstream: {},
+    // 空字符串专门表示未归属 Key；无原型字典也能安全处理导入的特殊 ID。
+    byKey: Object.create(null)
   };
 }
 
@@ -46,12 +52,15 @@ function loadMetrics() {
   if (!fs.existsSync(METRICS_PATH)) return { aggregates: defaults, legacyLogs: [] };
   try {
     const parsed = JSON.parse(fs.readFileSync(METRICS_PATH, 'utf8'));
+    const hasKeyMetrics = parsed.byKey && typeof parsed.byKey === 'object' && !Array.isArray(parsed.byKey);
     return {
       aggregates: {
         version: 1,
         totals: { ...defaults.totals, ...(parsed.totals || {}) },
-        byUpstream: parsed.byUpstream && typeof parsed.byUpstream === 'object' ? parsed.byUpstream : {}
+        byUpstream: parsed.byUpstream && typeof parsed.byUpstream === 'object' ? parsed.byUpstream : {},
+        byKey: hasKeyMetrics ? Object.assign(Object.create(null), parsed.byKey) : Object.create(null)
       },
+      needsKeyMigration: !hasKeyMetrics,
       // Older builds stored logs inline; migrate them into the JSONL file.
       legacyLogs: Array.isArray(parsed.logs) ? parsed.logs : []
     };
@@ -116,7 +125,8 @@ let logFileLines = 0;
   const state = loadLogs(loaded.legacyLogs);
   logs = state.logs;
   logFileLines = state.fileLines;
-  if (Array.isArray(loaded.legacyLogs) && loaded.legacyLogs.length) saveMetrics();
+  if (loaded.needsKeyMigration) migrateKeyMetrics();
+  if (loaded.needsKeyMigration || (Array.isArray(loaded.legacyLogs) && loaded.legacyLogs.length)) saveMetrics();
 }());
 
 function saveMetrics() {
@@ -143,9 +153,10 @@ function appendLog(entry) {
 }
 
 function normalizeUsage(usage = {}) {
-  const promptTokens = numberOrZero(usage.prompt_tokens ?? usage.input_tokens);
-  const completionTokens = numberOrZero(usage.completion_tokens ?? usage.output_tokens);
-  const totalTokens = numberOrZero(usage.total_tokens) || promptTokens + completionTokens;
+  if (!usage || typeof usage !== 'object') usage = {};
+  const promptTokens = numberOrZero(usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokens);
+  const completionTokens = numberOrZero(usage.completion_tokens ?? usage.output_tokens ?? usage.completionTokens);
+  const totalTokens = numberOrZero(usage.total_tokens ?? usage.totalTokens) || promptTokens + completionTokens;
   return { promptTokens, completionTokens, totalTokens };
 }
 
@@ -203,18 +214,42 @@ function normalizeDiagnostics(diag) {
   return hasContent ? result : null;
 }
 
-// 聚合单条日志到 totals/byUpstream：实时记录与时间范围统计共用同一套语义。
+function aggregateKeyInto(byKey, entry, counters) {
+  const keyId = entry.keyId ? String(entry.keyId).slice(0, 60) : '';
+  const item = byKey[keyId] || { keyId: keyId || null, keyName: '', ...emptyCounters(), lastRequestAt: null };
+  for (const field of Object.keys(emptyCounters())) item[field] += counters[field];
+  const time = logEntryTime(entry);
+  const latest = Number.isFinite(time) && (!item.lastRequestAt || time >= Date.parse(item.lastRequestAt));
+  if (keyId && entry.keyName && (!item.keyName || latest)) item.keyName = String(entry.keyName).slice(0, 100);
+  if (latest) item.lastRequestAt = new Date(time).toISOString();
+  byKey[keyId] = item;
+}
+
+// 升级时只用仍保留的明细恢复 Key 归属，不重置原有全量计数。
+function migrateKeyMetrics() {
+  const recovered = emptyMetrics();
+  for (const entry of logs.slice().reverse()) aggregateInto(recovered, entry);
+  const fields = Object.keys(emptyCounters());
+  // 聚合与明细不一致时不能猜测归属，保守地将原有计数标为未归属。
+  const consistent = fields.every((field) => recovered.totals[field] <= numberOrZero(metrics.totals[field]));
+  metrics.byKey = consistent ? recovered.byKey : Object.create(null);
+  const remainder = Object.fromEntries(fields.map((field) => [field,
+    numberOrZero(metrics.totals[field]) - (consistent ? recovered.totals[field] : 0)
+  ]));
+  if (Object.values(remainder).some((value) => value > 0)) aggregateKeyInto(metrics.byKey, {}, remainder);
+}
+
+function cloneKeyMetrics(byKey) {
+  return Object.fromEntries(Object.entries(byKey).map(([keyId, item]) => [keyId, { ...item }]));
+}
+
+// 聚合单条日志到 totals/byUpstream/byKey：实时记录、导入与时间范围共用同一套语义。
 function aggregateInto(state, entry) {
-  // 日志里的用量可能已是归一化后的 camelCase（实时记录），也可能来自导入的 snake_case。
-  const usage = normalizeUsage({
-    prompt_tokens: entry.usage?.prompt_tokens ?? entry.usage?.input_tokens ?? entry.usage?.promptTokens,
-    completion_tokens: entry.usage?.completion_tokens ?? entry.usage?.output_tokens ?? entry.usage?.completionTokens,
-    total_tokens: entry.usage?.total_tokens ?? entry.usage?.totalTokens
-  });
+  const usage = normalizeUsage(entry.usage);
   const attempts = normalizeAttempts(entry.attempts);
   const success = entry.success === true;
   // failover 表示真的换了上游：原地重试同一个站不算切换。
-  const failover = entry.failover !== undefined ? entry.failover === true : attempts.length > 1;
+  const failover = entry.failover !== undefined ? entry.failover === true : new Set(attempts.map((attempt) => attempt.upstream)).size > 1;
   const totals = state.totals;
   totals.requests += 1;
   if (success) totals.successful += 1;
@@ -223,6 +258,11 @@ function aggregateInto(state, entry) {
   totals.promptTokens += usage.promptTokens;
   totals.completionTokens += usage.completionTokens;
   totals.totalTokens += usage.totalTokens;
+  // 一条模型请求只计一次；同一请求的重试、故障转移不能重复累计 Key 用量。
+  aggregateKeyInto(state.byKey, entry, {
+    requests: 1, successful: success ? 1 : 0, failed: success ? 0 : 1,
+    failovers: failover ? 1 : 0, ...usage
+  });
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
     const item = state.byUpstream[attempt.upstream] || {
@@ -293,6 +333,10 @@ function normalizeImportedLog(entry) {
   const id = String(entry.id || '').trim();
   if (!id || id.length > 120) throw Object.assign(new Error('用量记录缺少有效的请求 ID'), { statusCode: 400 });
   const normalized = { ...entry, id, usage: normalizeUsage(entry.usage), attempts: normalizeAttempts(entry.attempts) };
+  for (const [field, limit] of [['keyId', 60], ['keyName', 100]]) {
+    if (entry[field]) normalized[field] = String(entry[field]).slice(0, limit);
+    else delete normalized[field];
+  }
   if (typeof normalized.contentDigest === 'string' && normalized.contentDigest.trim()) {
     normalized.contentDigest = normalized.contentDigest.trim().slice(0, MAX_CONTENT_DIGEST);
   } else {
@@ -327,11 +371,10 @@ function importUsageRecords(records) {
     importedIds.add(entry.id);
     accepted.push(entry);
   }
-  const chronological = [...logs, ...accepted].sort((a, b) => new Date(a.finishedAt || a.startedAt).getTime() - new Date(b.finishedAt || a.startedAt).getTime()).slice(-MAX_LOGS);
+  const chronological = [...logs, ...accepted].sort((a, b) => logEntryTime(a) - logEntryTime(b)).slice(-MAX_LOGS);
   logs = chronological.slice().reverse();
-  metrics = emptyMetrics();
-  // 与实时记录共用聚合语义：导入后的 totals/byUpstream 与逐条统计保持一致。
-  for (const entry of chronological) aggregateInto(metrics, entry);
+  // 只累计新增记录，不能因明细已裁剪而丢失已有全量计数。
+  for (const entry of accepted) aggregateInto(metrics, entry);
   writeLogFile(chronological);
   logFileLines = chronological.length;
   saveMetrics();
@@ -361,7 +404,8 @@ function getRangeStats({ from, to } = {}) {
     to: new Date(end).toISOString(),
     matched,
     totals: { ...state.totals },
-    byUpstream: Object.fromEntries(Object.entries(state.byUpstream).map(([name, value]) => [name, { ...value }]))
+    byUpstream: Object.fromEntries(Object.entries(state.byUpstream).map(([name, value]) => [name, { ...value }])),
+    byKey: cloneKeyMetrics(state.byKey)
   };
 }
 
@@ -489,6 +533,7 @@ function getMetrics(options = {}) {
     version: metrics.version,
     totals: { ...metrics.totals },
     byUpstream: Object.fromEntries(Object.entries(metrics.byUpstream).map(([name, value]) => [name, { ...value }])),
+    byKey: cloneKeyMetrics(metrics.byKey),
     logs: logPage.items,
     logPage: {
       limit: logPage.limit,
